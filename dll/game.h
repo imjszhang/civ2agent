@@ -27,11 +27,18 @@ std::string GameEventsJson();
 std::string GameActJson(const std::string& name, int unit, int city, int x, int y,
                         int id, int tax, int science, int button, const std::string& kind,
                         const std::string& order);
+// end_turn and the unit acts post the game's own menu command or key and
+// return an empty string. The command then stays pending until
+// GamePollPending sees the result at the game's outermost message loop.
 std::string GameBeginEndTurnJson();
-bool GameEndTurnPending();
-bool GameEndTurnDone();
-std::string GameFinishEndTurnJson();
-void GameCancelEndTurn();
+std::string GameBeginSkipIntroJson();
+bool GamePendingActive();
+std::string GamePollPending(int depth);
+void GameCancelPending();
+// Safe from the pipe thread. Wakes Civ2UIA's MsgWaitForMultipleObjectsEx
+// (QS_MOUSEBUTTON) so the game thread can run our hook again. press_enter
+// is for the end-of-turn prompt; press_escape skips the opening movie.
+void GameWakeUi(bool press_enter, bool press_escape = false);
 
 // Called on the game thread when a dialog appears under the active command.
 bool GameTakeModalAbort(std::string& response_json);

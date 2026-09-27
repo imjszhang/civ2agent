@@ -19,9 +19,6 @@ std::string g_hash;
 std::string g_block;
 bool g_hash_ok = false;
 bool g_limits_ok = false;
-bool g_end_pending = false;
-int g_end_turn = 0;
-int g_end_year = 0;
 void* g_last_dialog = nullptr;
 bool g_dialog_announced = false;
 
@@ -39,33 +36,51 @@ ShadowCity g_cities[kCitySlots];
 bool g_shadow_ready = false;
 std::vector<std::string> g_events;
 
-using FnMove = void(__cdecl*)(int, int, unsigned char);
-using FnProcess = int(__cdecl*)();
 using FnAfter = void(__cdecl*)(int);
 using FnCanMove = int(__cdecl*)(int);
-using FnGoto = void(__cdecl*)(int);
 using FnGetSq = MapSquare*(__cdecl*)(int, int);
 using FnVisible = int(__cdecl*)(int, int, int);
 using FnCalc = int(__cdecl*)(int, int);
 using FnHasTech = int(__cdecl*)(int, int);
 using FnStr = char*(__cdecl*)(int);
 using FnYear = int(__cdecl*)(int);
-using FnBuild = void(__cdecl*)(int);
-using FnBusy = void(__cdecl*)();
 
-FnMove g_move = nullptr;
-FnProcess g_process = nullptr;
 FnAfter g_after = nullptr;
 FnCanMove g_can = nullptr;
-FnGoto g_goto = nullptr;
 FnGetSq g_square = nullptr;
 FnVisible g_visible = nullptr;
 FnCalc g_calc = nullptr;
 FnHasTech g_has_tech = nullptr;
 FnStr g_string = nullptr;
 FnYear g_year_fn = nullptr;
-FnBuild g_build = nullptr;
-FnBusy g_clear_busy = nullptr;
+
+enum class PendingKind { None, EndTurn, FoundCity, Move, Goto, Order, SkipIntro };
+
+struct Pending {
+  PendingKind kind = PendingKind::None;
+  int unit = -1;
+  int unit_id = 0;
+  int x = 0;
+  int y = 0;
+  int spent = 0;
+  int orders = 0;
+  int active = -1;
+  int cities = 0;
+  int target_x = 0;
+  int target_y = 0;
+  int turn = 0;
+  int year = 0;
+  DWORD posted = 0;
+  DWORD last_wake = 0;
+};
+
+Pending g_pending;
+bool g_turn_inflight = false;
+int g_inflight_turn = 0;
+int g_inflight_year = 0;
+
+constexpr DWORD kNoEffectMs = 1500;
+constexpr DWORD kRepostEndTurnMs = 2500;
 
 template <typename T>
 T* At(std::uint32_t va) {
@@ -174,33 +189,6 @@ bool LimitsAllowed() {
   return ok;
 }
 
-int SehCall0(void(__cdecl* fn)()) {
-  __try {
-    fn();
-    return 0;
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
-    return 1;
-  }
-}
-
-int SehMove(int unit, int dir) {
-  __try {
-    g_move(unit, dir, 3);
-    return 0;
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
-    return 1;
-  }
-}
-
-int SehProcess(int* ret) {
-  __try {
-    *ret = g_process();
-    return 0;
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
-    return 1;
-  }
-}
-
 int SehAfter(int v) {
   __try {
     g_after(v);
@@ -213,15 +201,6 @@ int SehAfter(int v) {
 int SehCan(int unit, int* ret) {
   __try {
     *ret = g_can(unit);
-    return 0;
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
-    return 1;
-  }
-}
-
-int SehBuild(int unit) {
-  __try {
-    g_build(unit);
     return 0;
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     return 1;
@@ -612,14 +591,54 @@ BOOL CALLBACK CollectMenuRows(HWND hwnd, LPARAM lp) {
 
 struct MenuChoice {
   std::string text;
-  HWND hwnd;
+  HWND hwnd = nullptr;
+  int list_index = -1;
+  int list_id = -1;
+  bool line = false;
 };
 
-std::vector<MenuChoice> BuildMenuChoices(void* dlg) {
+struct ListLine {
+  const char* record;
+  int id;
+  std::string text;
+};
+
+std::vector<ListLine> ReadDialogList(void* dlg, int* selected) {
+  std::vector<ListLine> lines;
+  if (selected) *selected = -1;
+  auto* base = static_cast<char*>(dlg);
+  const char* head = *reinterpret_cast<const char**>(base + kDlgListHead);
+  const char* current = *reinterpret_cast<const char**>(base + kDlgListSelected);
+  const char* rec = head;
+  while (rec && lines.size() < 64 && Readable(rec, kListNext + sizeof(char*))) {
+    const char* text = *reinterpret_cast<const char* const*>(rec + kListText);
+    std::string label = ReadGameText(text, 80);
+    if (label.empty()) break;
+    if (selected && rec == current) *selected = static_cast<int>(lines.size());
+    lines.push_back({rec, *reinterpret_cast<const int*>(rec + kListId), label});
+    rec = *reinterpret_cast<const char* const*>(rec + kListNext);
+  }
+  return lines;
+}
+
+std::vector<MenuChoice> BuildMenuChoices(void* dlg, bool* is_list) {
   std::vector<MenuChoice> choices;
+  if (is_list) *is_list = false;
   std::string title;
   std::vector<std::string> labels;
   CollectMenuLabels(dlg, title, labels);
+  std::vector<ListLine> list = ReadDialogList(dlg, nullptr);
+  if (!list.empty()) {
+    if (is_list) *is_list = true;
+    for (size_t i = 0; i < list.size(); ++i) {
+      MenuChoice choice;
+      choice.text = list[i].text;
+      choice.list_index = static_cast<int>(i);
+      choice.list_id = list[i].id;
+      choices.push_back(choice);
+    }
+    labels.clear();
+  }
   auto* base = static_cast<char*>(dlg);
   int num_buttons = *reinterpret_cast<int*>(base + kDlgNumButtons);
   std::vector<std::string> button_labels;
@@ -643,8 +662,13 @@ std::vector<MenuChoice> BuildMenuChoices(void* dlg) {
   EnumWindows(FindMenuWindow, reinterpret_cast<LPARAM>(&find));
   MenuRows rows;
   if (find.hwnd) EnumChildWindows(find.hwnd, CollectMenuRows, reinterpret_cast<LPARAM>(&rows));
-  std::sort(rows.rows.begin(), rows.rows.end(),
-            [](const std::pair<int, HWND>& a, const std::pair<int, HWND>& b) { return a.first < b.first; });
+  std::sort(rows.rows.begin(), rows.rows.end(), [](const std::pair<int, HWND>& a, const std::pair<int, HWND>& b) {
+    if (a.first != b.first) return a.first < b.first;
+    RECT ra{}, rb{};
+    GetWindowRect(a.second, &ra);
+    GetWindowRect(b.second, &rb);
+    return ra.left < rb.left;
+  });
   std::vector<HWND> lines;
   std::vector<HWND> buttons;
   for (const auto& row : rows.rows) {
@@ -660,25 +684,58 @@ std::vector<MenuChoice> BuildMenuChoices(void* dlg) {
     GetWindowRect(b, &rb);
     return ra.left < rb.left;
   });
-  int line_count = static_cast<int>(lines.size());
-  if (line_count > static_cast<int>(line_labels.size())) line_count = static_cast<int>(line_labels.size());
-  for (int i = 0; i < line_count; ++i) choices.push_back({line_labels[i], lines[i]});
-  int button_count = static_cast<int>(buttons.size());
-  if (button_count > static_cast<int>(button_labels.size())) button_count = static_cast<int>(button_labels.size());
-  for (int i = 0; i < button_count; ++i) choices.push_back({button_labels[i], buttons[i]});
+  if (list.empty()) {
+    int line_count = static_cast<int>(lines.size());
+    if (line_count > static_cast<int>(line_labels.size())) line_count = static_cast<int>(line_labels.size());
+    for (int i = 0; i < line_count; ++i) {
+      MenuChoice choice;
+      choice.text = line_labels[i];
+      choice.hwnd = lines[i];
+      choice.line = true;
+      choices.push_back(choice);
+    }
+  }
+  // Buttons without a caption in ButtonTexts are the dialog's own OK and
+  // Cancel, laid out after the captioned ones.
+  static const char* const kUnnamed[] = {"确定", "取消"};
+  int bottom = 0;
+  for (HWND b : buttons) {
+    RECT rect{};
+    GetWindowRect(b, &rect);
+    bottom = (std::max)(bottom, static_cast<int>(rect.top));
+  }
+  size_t unnamed = 0;
+  for (size_t i = 0; i < buttons.size(); ++i) {
+    MenuChoice choice;
+    choice.hwnd = buttons[i];
+    if (i < button_labels.size()) {
+      choice.text = button_labels[i];
+    } else {
+      RECT rect{};
+      GetWindowRect(buttons[i], &rect);
+      if (rect.top < bottom - 4 || unnamed >= 2) continue;
+      choice.text = kUnnamed[unnamed++];
+    }
+    choices.push_back(choice);
+  }
   return choices;
 }
 
-void ClickChoice(HWND target) {
-  HWND parent = GetParent(target);
-  if (parent) SetForegroundWindow(parent);
-  RECT rect{};
-  GetWindowRect(target, &rect);
-  int x = (rect.left + rect.right) / 2;
-  int y = (rect.top + rect.bottom) / 2;
-  SetCursorPos(x, y);
-  mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
-  mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+HWND DialogWindow(void* dlg) {
+  const char* title_a = *reinterpret_cast<const char**>(static_cast<char*>(dlg) + kDlgTitle);
+  if (!title_a || !Readable(title_a, 1)) return nullptr;
+  MenuFind find{title_a, nullptr, 0};
+  EnumWindows(FindMenuWindow, reinterpret_cast<LPARAM>(&find));
+  return find.hwnd;
+}
+
+void PostKey(HWND hwnd, UINT vk) {
+  UINT scan = MapVirtualKeyA(vk, MAPVK_VK_TO_VSC);
+  LPARAM down = 1 | (static_cast<LPARAM>(scan) << 16);
+  LPARAM up = down | (1u << 30) | (1u << 31);
+  PostMessageA(hwnd, WM_KEYDOWN, vk, down);
+  if (vk == VK_RETURN || vk == VK_SPACE) PostMessageA(hwnd, WM_CHAR, vk, down);
+  PostMessageA(hwnd, WM_KEYUP, vk, up);
 }
 
 std::string MenuJsonObject() {
@@ -687,21 +744,32 @@ std::string MenuJsonObject() {
   std::string title;
   std::vector<std::string> ignored;
   CollectMenuLabels(dlg, title, ignored);
-  std::vector<MenuChoice> choices = BuildMenuChoices(dlg);
+  bool is_list = false;
+  std::vector<MenuChoice> choices = BuildMenuChoices(dlg, &is_list);
+  int selected = -1;
+  if (is_list) ReadDialogList(dlg, &selected);
   std::string out = std::string("\"in_game\":") + (MatchLive() ? "true" : "false") + ",\"menu\":{\"title\":" +
-                    JsonString(title) + ",\"options\":[";
+                    JsonString(title) + ",\"kind\":" + JsonString(is_list ? "list" : "controls");
+  if (is_list) out += ",\"selected\":" + std::to_string(selected);
+  out += ",\"options\":[";
   for (size_t i = 0; i < choices.size(); ++i) {
     if (i) out += ',';
-    out += std::string("{\"index\":") + std::to_string(i) + ",\"text\":" + JsonString(choices[i].text) + "}";
+    out += std::string("{\"index\":") + std::to_string(i) + ",\"text\":" + JsonString(choices[i].text);
+    if (choices[i].list_id >= 0) out += ",\"id\":" + std::to_string(choices[i].list_id);
+    out += "}";
   }
   out += "]}";
   return OkJson(out);
 }
 
+// List rows are drawn by the dialog itself, so they are picked with the arrow
+// keys and Enter. Buttons and menu rows are real controls that ignore posted
+// mouse messages; for those the caller gets screen coordinates and clicks
+// with the real cursor.
 std::string ClickMenuOption(int index, const std::string& text) {
   void* dlg = DialogPtr();
   if (!dlg) return ErrJson("no_dialog", "没有打开的界面");
-  std::vector<MenuChoice> choices = BuildMenuChoices(dlg);
+  std::vector<MenuChoice> choices = BuildMenuChoices(dlg, nullptr);
   if (!text.empty()) {
     index = -1;
     for (size_t i = 0; i < choices.size(); ++i) {
@@ -713,21 +781,281 @@ std::string ClickMenuOption(int index, const std::string& text) {
     if (index < 0) return ErrJson("illegal", "界面上没有这个选项");
   }
   if (index < 0 || index >= static_cast<int>(choices.size())) return ErrJson("illegal", "选项下标超出范围");
-  ClickChoice(choices[index].hwnd);
-  return OkJson(std::string("\"index\":") + std::to_string(index) + ",\"text\":" +
-                JsonString(choices[index].text));
+  const MenuChoice& choice = choices[index];
+  std::string head = std::string("\"index\":") + std::to_string(index) + ",\"text\":" + JsonString(choice.text);
+  if (choice.list_index >= 0) {
+    HWND hwnd = DialogWindow(dlg);
+    if (!hwnd) return ErrJson("no_dialog", "找不到对话框窗口");
+    int selected = -1;
+    ReadDialogList(dlg, &selected);
+    if (selected < 0) selected = 0;
+    int delta = choice.list_index - selected;
+    for (int i = 0; i < delta; ++i) PostKey(hwnd, VK_DOWN);
+    for (int i = 0; i < -delta; ++i) PostKey(hwnd, VK_UP);
+    PostKey(hwnd, VK_RETURN);
+    return OkJson(head + ",\"via\":\"keys\"");
+  }
+  if (!choice.hwnd || !IsWindow(choice.hwnd)) return ErrJson("no_dialog", "找不到选项控件");
+  RECT rect{};
+  GetWindowRect(choice.hwnd, &rect);
+  HWND top = GetAncestor(choice.hwnd, GA_ROOT);
+  return OkJson(head + ",\"click\":{\"x\":" + std::to_string((rect.left + rect.right) / 2) +
+                ",\"y\":" + std::to_string((rect.top + rect.bottom) / 2) +
+                ",\"hwnd\":" + std::to_string(reinterpret_cast<std::uintptr_t>(top)) +
+                ",\"repeats\":" + (choice.line ? "2" : "1") + "}");
 }
 
-std::string OrderNameToCode(const std::string& order, int* code) {
-  if (order == "fortify") *code = 1;
-  else if (order == "sleep") *code = 3;
-  else if (order == "road") *code = 5;
-  else if (order == "irrigate") *code = 6;
-  else if (order == "mine") *code = 7;
-  else if (order == "clean") *code = 9;
-  else if (order == "wait" || order == "skip") *code = -2;
-  else return ErrJson("illegal", "未知命令 " + order);
-  return {};
+struct TopPick {
+  HWND hwnd = nullptr;
+  int area = 0;
+};
+
+BOOL CALLBACK PickMainWindow(HWND hwnd, LPARAM lp) {
+  DWORD pid = 0;
+  GetWindowThreadProcessId(hwnd, &pid);
+  if (pid != GetCurrentProcessId() || !IsWindowVisible(hwnd) || !GetMenu(hwnd)) return TRUE;
+  RECT rect{};
+  GetWindowRect(hwnd, &rect);
+  int area = (rect.right - rect.left) * (rect.bottom - rect.top);
+  auto* pick = reinterpret_cast<TopPick*>(lp);
+  if (area > pick->area) {
+    pick->hwnd = hwnd;
+    pick->area = area;
+  }
+  return TRUE;
+}
+
+BOOL CALLBACK PickMapChild(HWND hwnd, LPARAM lp) {
+  char cls[40] = {};
+  GetClassNameA(hwnd, cls, sizeof(cls));
+  if (strcmp(cls, "MSWindowClass") != 0 || !IsWindowVisible(hwnd)) return TRUE;
+  RECT rect{};
+  GetWindowRect(hwnd, &rect);
+  int area = (rect.right - rect.left) * (rect.bottom - rect.top);
+  auto* pick = reinterpret_cast<TopPick*>(lp);
+  if (area > pick->area) {
+    pick->hwnd = hwnd;
+    pick->area = area;
+  }
+  return TRUE;
+}
+
+HWND MainWindow() {
+  TopPick pick;
+  EnumWindows(PickMainWindow, reinterpret_cast<LPARAM>(&pick));
+  return pick.hwnd;
+}
+
+HWND MapWindow() {
+  HWND main = MainWindow();
+  if (!main) return nullptr;
+  TopPick pick;
+  EnumChildWindows(main, PickMapChild, reinterpret_cast<LPARAM>(&pick));
+  return pick.hwnd;
+}
+
+constexpr LPARAM kKickEnter = 1;
+constexpr LPARAM kKickEscape = 2;
+
+BOOL CALLBACK KickChild(HWND hwnd, LPARAM flags) {
+  PostMessageA(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, 0);
+  PostMessageA(hwnd, WM_LBUTTONUP, 0, 0);
+  if (flags & kKickEnter) PostKey(hwnd, VK_RETURN);
+  if (flags & kKickEscape) {
+    PostKey(hwnd, VK_ESCAPE);
+    PostKey(hwnd, VK_SPACE);
+  }
+  return TRUE;
+}
+
+BOOL CALLBACK KickWindow(HWND hwnd, LPARAM flags) {
+  DWORD pid = 0;
+  GetWindowThreadProcessId(hwnd, &pid);
+  if (pid != GetCurrentProcessId() || !IsWindowVisible(hwnd)) return TRUE;
+  PostMessageA(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, 0);
+  PostMessageA(hwnd, WM_LBUTTONUP, 0, 0);
+  if (flags & kKickEnter) PostKey(hwnd, VK_RETURN);
+  if (flags & kKickEscape) {
+    PostKey(hwnd, VK_ESCAPE);
+    PostKey(hwnd, VK_SPACE);
+  }
+  PostMessageA(hwnd, WM_NULL, 0, 0);
+  EnumChildWindows(hwnd, KickChild, flags);
+  return TRUE;
+}
+
+bool MenuHasStartGame() {
+  void* dlg = DialogPtr();
+  if (!dlg) return false;
+  std::vector<MenuChoice> choices = BuildMenuChoices(dlg, nullptr);
+  for (const auto& choice : choices) {
+    if (choice.text == "开始新游戏") return true;
+  }
+  return false;
+}
+
+std::string SkipIntroJson(bool skipped) {
+  return OkJson(std::string("\"skipped\":") + (skipped ? "true" : "false") +
+                ",\"at_menu\":" + (MenuHasStartGame() ? "true" : "false") +
+                ",\"in_game\":" + (MatchLive() ? "true" : "false"));
+}
+
+struct MenuCommand {
+  UINT id = 0;
+  bool enabled = false;
+};
+
+// Menu items are found by the shortcut shown after the tab, e.g. "b" for
+// 建立新城市 or "Ctrl+N" for 结束全部回合. Item captions change with the active
+// unit and terrain, the shortcuts do not.
+MenuCommand FindCommand(const wchar_t* shortcut) {
+  MenuCommand found;
+  HWND main = MainWindow();
+  HMENU bar = main ? GetMenu(main) : nullptr;
+  if (!bar) return found;
+  int top = GetMenuItemCount(bar);
+  for (int i = 0; i < top; ++i) {
+    HMENU sub = GetSubMenu(bar, i);
+    if (!sub) continue;
+    int count = GetMenuItemCount(sub);
+    for (int j = 0; j < count; ++j) {
+      wchar_t caption[128] = {};
+      if (!GetMenuStringW(sub, j, caption, 128, MF_BYPOSITION)) continue;
+      const wchar_t* tab = wcschr(caption, L'\t');
+      if (!tab || wcscmp(tab + 1, shortcut) != 0) continue;
+      found.id = GetMenuItemID(sub, j);
+      UINT state = GetMenuState(sub, j, MF_BYPOSITION);
+      found.enabled = (state & (MF_GRAYED | MF_DISABLED)) == 0;
+      return found;
+    }
+  }
+  return found;
+}
+
+const wchar_t* OrderShortcut(const std::string& order) {
+  if (order == "fortify") return L"f";
+  if (order == "sleep") return L"s";
+  if (order == "road") return L"r";
+  if (order == "irrigate") return L"i";
+  if (order == "mine") return L"m";
+  if (order == "clean") return L"p";
+  if (order == "wait") return L"w";
+  if (order == "skip") return L"SPACE";
+  return nullptr;
+}
+
+UINT DirectionKey(int dir) {
+  static const UINT kKeys[8] = {VK_NUMPAD9, VK_NUMPAD6, VK_NUMPAD3, VK_NUMPAD2,
+                                VK_NUMPAD1, VK_NUMPAD4, VK_NUMPAD7, VK_NUMPAD8};
+  return dir >= 0 && dir < 8 ? kKeys[dir] : 0;
+}
+
+int StepToward(int ux, int uy, int tx, int ty) {
+  auto* dxs = At<std::int8_t>(kVaPfdx);
+  auto* dys = At<std::int8_t>(kVaPfdy);
+  if (!Readable(dxs, 8) || !Readable(dys, 8)) return -1;
+  auto* map = MapH();
+  int width = map->size_x * 2;
+  auto distance = [&](int x, int y) {
+    int dx = map->flat ? (tx - x) : NormalizeDelta(tx - x, width);
+    int dy = ty - y;
+    return (std::max)(std::abs(dx + dy), std::abs(dx - dy)) / 2;
+  };
+  int best = -1;
+  int best_dist = distance(ux, uy);
+  for (int dir = 0; dir < 8; ++dir) {
+    int d = distance(ux + dxs[dir], uy + dys[dir]);
+    if (d < best_dist) {
+      best = dir;
+      best_dist = d;
+    }
+  }
+  return best;
+}
+
+void SnapshotUnit() {
+  auto* game = G();
+  g_pending.active = game->active_unit;
+  g_pending.cities = game->total_cities;
+  int unit = g_pending.unit;
+  if (unit < 0 || unit >= kUnitSlots) return;
+  auto& u = Units()[unit];
+  g_pending.unit_id = u.id;
+  g_pending.x = u.x;
+  g_pending.y = u.y;
+  g_pending.spent = u.move_points;
+  g_pending.orders = u.orders;
+  g_pending.posted = GetTickCount();
+}
+
+void BeginUnitPending(PendingKind kind, int unit, int tx, int ty) {
+  g_pending = {};
+  g_pending.kind = kind;
+  g_pending.unit = unit;
+  g_pending.target_x = tx;
+  g_pending.target_y = ty;
+  SnapshotUnit();
+}
+
+bool UnitAlive() {
+  int unit = g_pending.unit;
+  return unit >= 0 && unit < kUnitSlots && Units()[unit].id != 0 && Units()[unit].id == g_pending.unit_id;
+}
+
+bool UnitChanged() {
+  auto* game = G();
+  if (!UnitAlive()) return true;
+  if (game->total_cities != g_pending.cities) return true;
+  if (game->active_unit != g_pending.active) return true;
+  auto& u = Units()[g_pending.unit];
+  return u.x != g_pending.x || u.y != g_pending.y || u.move_points != g_pending.spent ||
+         u.orders != g_pending.orders;
+}
+
+void KeepPumping(DWORD now) {
+  if (now - g_pending.last_wake < 30) return;
+  g_pending.last_wake = now;
+  HWND main = MainWindow();
+  if (main) PostMessageA(main, WM_NULL, 0, 0);
+}
+
+// Mid-turn the game ends the turn from 结束全部回合 (Ctrl+N). Once every unit has
+// moved that item is greyed and the game waits for Enter on the map instead.
+bool PostEndTurn() {
+  MenuCommand cmd = FindCommand(L"Ctrl+N");
+  if (cmd.id && cmd.enabled) {
+    HWND main = MainWindow();
+    if (!main) return false;
+    PostMessageA(main, WM_COMMAND, cmd.id, 0);
+    return true;
+  }
+  HWND map = MapWindow();
+  if (!map) return false;
+  PostKey(map, VK_RETURN);
+  return true;
+}
+
+std::string TurnJson() {
+  auto* game = G();
+  RefreshShadow();
+  auto* civ = CivAt(Human());
+  int year_text = game->year;
+  if (SehYear(game->turn, &year_text)) year_text = game->year;
+  return OkJson(std::string("\"turn\":") + std::to_string(game->turn) + ",\"year\":" +
+                std::to_string(game->year) + ",\"year_computed\":" + std::to_string(year_text) +
+                ",\"gold\":" + std::to_string(civ->gold));
+}
+
+BOOL CALLBACK InvalidateChild(HWND hwnd, LPARAM) {
+  InvalidateRect(hwnd, nullptr, FALSE);
+  return TRUE;
+}
+
+void RepaintPanels() {
+  HWND main = MainWindow();
+  if (!main) return;
+  EnumChildWindows(main, InvalidateChild, 0);
+  RedrawWindow(main, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
 }
 
 }  // namespace
@@ -752,19 +1080,14 @@ void GameInit() {
   g_limits_ok = LimitsAllowed();
   if (!g_hash_ok) g_block = "version_mismatch";
   else if (!g_limits_ok) g_block = "unsupported_limits";
-  g_move = reinterpret_cast<FnMove>(g_base + (kVaMoveUnit - kImageBase));
-  g_process = reinterpret_cast<FnProcess>(g_base + (kVaProcessUnit - kImageBase));
   g_after = reinterpret_cast<FnAfter>(g_base + (kVaAfterActive - kImageBase));
   g_can = reinterpret_cast<FnCanMove>(g_base + (kVaUnitCanMove - kImageBase));
-  g_goto = reinterpret_cast<FnGoto>(g_base + (kVaProcessGoto - kImageBase));
   g_square = reinterpret_cast<FnGetSq>(g_base + (kVaMapGetSquare - kImageBase));
   g_visible = reinterpret_cast<FnVisible>(g_base + (kVaMapVisible - kImageBase));
   g_calc = reinterpret_cast<FnCalc>(g_base + (kVaCalcCity - kImageBase));
   g_has_tech = reinterpret_cast<FnHasTech>(g_base + (kVaCivHasTech - kImageBase));
   g_string = reinterpret_cast<FnStr>(g_base + (kVaGetString - kImageBase));
   g_year_fn = reinterpret_cast<FnYear>(g_base + (kVaTurnToYear - kImageBase));
-  g_build = reinterpret_cast<FnBuild>(g_base + (kVaBuildCity - kImageBase));
-  g_clear_busy = reinterpret_cast<FnBusy>(g_base + (kVaClearBusy - kImageBase));
   GameLog("civ2agent init base=%p hash=%s ok=%d limits=%d", g_base, g_hash.c_str(), g_hash_ok,
           g_limits_ok);
 }
@@ -800,7 +1123,16 @@ void GameObserveDialog() {
 
 bool GameTakeModalAbort(std::string& response_json) {
   if (!DialogPtr()) return false;
-  response_json = std::string("{\"ok\":false,\"error\":\"modal_open\",\"reason\":\"出现对话框\",") +
+  std::string turn;
+  if (MatchLive()) {
+    turn = std::string("\"turn\":") + std::to_string(G()->turn) + ",\"year\":" + std::to_string(G()->year) + ",";
+    if (g_turn_inflight) {
+      bool ended = G()->turn != g_inflight_turn || G()->year != g_inflight_year;
+      turn += std::string("\"turn_ended\":") + (ended ? "true" : "false") + ",";
+      if (ended) g_turn_inflight = false;
+    }
+  }
+  response_json = std::string("{\"ok\":false,\"error\":\"modal_open\",\"reason\":\"出现对话框\",") + turn +
                   "\"dialog\":" + DialogJson() + "}";
   return true;
 }
@@ -1062,74 +1394,44 @@ std::string GameActJson(const std::string& name, int unit, int city, int x, int 
     return OkJson(UnitBrief(unit));
   }
 
-  if (name == "move") {
+  if (name == "move" || name == "goto") {
     auto& u = Units()[unit];
-    int dir = DirectionTo(u.x, u.y, x, y);
-    if (dir < 0) return ErrJson("illegal", "目标不是相邻格");
+    int dir = name == "move" ? DirectionTo(u.x, u.y, x, y) : StepToward(u.x, u.y, x, y);
+    if (name == "move" && dir < 0) return ErrJson("illegal", "目标不是相邻格");
+    if (name == "goto" && u.x == x && u.y == y) return OkJson(UnitBrief(unit) + ",\"changed\":false");
+    if (dir < 0) return ErrJson("illegal", "找不到朝目标走的一步");
     int can = 0;
     if (SehCan(unit, &can) || !can) return ErrJson("illegal", "这个单位现在不能移动");
-    Activate(unit);
-    if (SehMove(unit, dir)) return ErrJson("game_fault", "MoveUnit 调用异常");
-    RefreshShadow();
-    NoteResearchChange(research_before, civ->researching, future_before, civ->future_techs);
-    return OkJson(UnitBrief(unit));
-  }
-
-  if (name == "goto") {
-    auto& u = Units()[unit];
-    int can = 0;
-    if (SehCan(unit, &can) || !can) return ErrJson("illegal", "这个单位现在不能移动");
-    u.goto_x = static_cast<std::uint16_t>(x);
-    u.goto_y = static_cast<std::uint16_t>(y);
-    u.orders = 0x0B;
-    u.move_iteration = 0;
-    Activate(unit);
-    for (int step = 0; step < 64; ++step) {
-      if (DialogPtr()) break;
-      int ret = 0;
-      if (SehProcess(&ret)) return ErrJson("game_fault", "ProcessUnit 调用异常");
-      if (u.x == x && u.y == y) break;
-      if (u.orders != 0x0B) break;
-      int still = 0;
-      if (SehCan(unit, &still) || !still) break;
-    }
-    RefreshShadow();
-    return OkJson(UnitBrief(unit));
+    HWND map = MapWindow();
+    if (!map) return ErrJson("game_fault", "找不到地图窗口");
+    if (G()->active_unit != unit) Activate(unit);
+    BeginUnitPending(name == "move" ? PendingKind::Move : PendingKind::Goto, unit, x, y);
+    PostKey(map, DirectionKey(dir));
+    return {};
   }
 
   if (name == "order") {
-    int code = 0;
-    std::string bad = OrderNameToCode(order, &code);
-    if (!bad.empty()) return bad;
-    auto& u = Units()[unit];
-    Activate(unit);
-    if (order == "wait") {
-      u.attributes = static_cast<std::uint16_t>(u.attributes | 0x4000);
-      u.orders = -1;
-    } else if (order == "skip") {
-      u.move_points = 0;
-      u.orders = -1;
-      u.attributes = static_cast<std::uint16_t>(u.attributes & ~0x4000);
-    } else {
-      u.orders = static_cast<std::int8_t>(code);
-      u.move_iteration = 0;
-      int ret = 0;
-      if (SehProcess(&ret)) return ErrJson("game_fault", "ProcessUnit 调用异常");
-    }
-    RefreshShadow();
-    return OkJson(UnitBrief(unit));
+    const wchar_t* shortcut = OrderShortcut(order);
+    if (!shortcut) return ErrJson("illegal", "未知命令 " + order);
+    if (G()->active_unit != unit) Activate(unit);
+    MenuCommand cmd = FindCommand(shortcut);
+    if (!cmd.id) return ErrJson("illegal", "命令菜单里没有这一项，当前单位不能执行 " + order);
+    if (!cmd.enabled) return ErrJson("illegal", "命令菜单里这一项是灰的，当前单位不能执行 " + order);
+    BeginUnitPending(PendingKind::Order, unit, 0, 0);
+    PostMessageA(MainWindow(), WM_COMMAND, cmd.id, 0);
+    return {};
   }
 
   if (name == "found_city") {
     auto& u = Units()[unit];
     if (u.type >= 62 || Types()[u.type].role != 5) return ErrJson("illegal", "只有拓荒者或工程师能建城");
-    int before = G()->total_cities;
-    Activate(unit);
-    if (SehBuild(unit)) return ErrJson("game_fault", "建城函数调用异常");
-    RefreshShadow();
-    int after = G()->total_cities;
-    return OkJson(std::string("\"cities_before\":") + std::to_string(before) +
-                  ",\"cities_after\":" + std::to_string(after) + "," + UnitBrief(unit));
+    if (G()->active_unit != unit) Activate(unit);
+    MenuCommand cmd = FindCommand(L"b");
+    if (!cmd.id) return ErrJson("illegal", "命令菜单里没有建立新城市");
+    if (!cmd.enabled) return ErrJson("illegal", "建立新城市现在是灰的，这里不能建城");
+    BeginUnitPending(PendingKind::FoundCity, unit, 0, 0);
+    PostMessageA(MainWindow(), WM_COMMAND, cmd.id, 0);
+    return {};
   }
 
   if (name == "produce") {
@@ -1177,6 +1479,7 @@ std::string GameActJson(const std::string& name, int unit, int city, int x, int 
       }
     }
     RefreshShadow();
+    RepaintPanels();
     return OkJson(std::string("\"tax_rate\":") + std::to_string(tax) +
                   ",\"science_rate\":" + std::to_string(science));
   }
@@ -1192,31 +1495,139 @@ std::string GameBeginEndTurnJson() {
            "\"dialog\":" + DialogJson() + "}";
   }
   auto* game = G();
-  g_end_turn = game->turn;
-  g_end_year = game->year;
-  g_end_pending = true;
-  game->word_flags = static_cast<std::uint16_t>(game->word_flags | 0x2);
-  if (SehCall0(g_clear_busy)) return ErrJson("game_fault", "结束回合标志调用异常");
-  HWND top = GetForegroundWindow();
-  if (top) PostMessageA(top, WM_NULL, 0, 0);
+  if (g_turn_inflight && (game->turn != g_inflight_turn || game->year != g_inflight_year)) {
+    g_turn_inflight = false;
+  }
+  if (g_turn_inflight) {
+    g_pending = {};
+    g_pending.kind = PendingKind::EndTurn;
+    g_pending.turn = g_inflight_turn;
+    g_pending.year = g_inflight_year;
+    g_pending.posted = GetTickCount();
+    return {};
+  }
+  if (!PostEndTurn()) return ErrJson("game_fault", "找不到游戏窗口");
+  g_turn_inflight = true;
+  g_inflight_turn = game->turn;
+  g_inflight_year = game->year;
+  g_pending = {};
+  g_pending.kind = PendingKind::EndTurn;
+  g_pending.turn = game->turn;
+  g_pending.year = game->year;
+  g_pending.posted = GetTickCount();
   return {};
 }
 
-bool GameEndTurnPending() { return g_end_pending; }
-
-bool GameEndTurnDone() {
-  if (!g_end_pending || !MatchLive()) return false;
-  auto* game = G();
-  return game->turn != g_end_turn || game->year != g_end_year;
+std::string GameBeginSkipIntroJson() {
+  std::string err;
+  if (Blocked(err)) return err;
+  if (MatchLive()) return SkipIntroJson(false);
+  if (MenuHasStartGame()) return SkipIntroJson(false);
+  g_pending = {};
+  g_pending.kind = PendingKind::SkipIntro;
+  g_pending.posted = GetTickCount();
+  EnumWindows(KickWindow, kKickEscape);
+  return {};
 }
 
-std::string GameFinishEndTurnJson() {
-  g_end_pending = false;
+bool GamePendingActive() { return g_pending.kind != PendingKind::None; }
+
+std::string GamePollPending(int depth) {
+  if (g_pending.kind == PendingKind::None) return {};
+  DWORD now = GetTickCount();
+  if (g_pending.kind == PendingKind::SkipIntro) {
+    if (MatchLive() || MenuHasStartGame()) {
+      g_pending = {};
+      return SkipIntroJson(true);
+    }
+    if (now - g_pending.posted > 400) {
+      EnumWindows(KickWindow, kKickEscape);
+      g_pending.posted = now;
+    }
+    KeepPumping(now);
+    return {};
+  }
   auto* game = G();
+  if (g_pending.kind == PendingKind::EndTurn && !DialogPtr()) {
+    bool advanced = game->turn != g_pending.turn || game->year != g_pending.year;
+    if (advanced && depth == 1) {
+      g_pending = {};
+      g_turn_inflight = false;
+      return TurnJson();
+    }
+    // After 结束全部回合 the game can stop on its end-of-turn prompt, a nested
+    // loop that waits for Enter on the map.
+    if (!advanced && now - g_pending.posted > kRepostEndTurnMs) {
+      if (depth == 1) {
+        PostEndTurn();
+      } else if (HWND map = MapWindow()) {
+        PostKey(map, VK_RETURN);
+      }
+      g_pending.posted = now;
+    }
+    KeepPumping(now);
+    return {};
+  }
+  // The game only returns to its outermost message loop once it is waiting
+  // for the player again, so results are read there.
+  if (depth != 1 || DialogPtr()) {
+    KeepPumping(now);
+    return {};
+  }
+  if (!UnitChanged()) {
+    if (now - g_pending.posted < kNoEffectMs) {
+      KeepPumping(now);
+      return {};
+    }
+    int unit = g_pending.unit;
+    g_pending = {};
+    RefreshShadow();
+    return OkJson(UnitBrief(unit) + ",\"changed\":false");
+  }
+  int unit = g_pending.unit;
+  if (g_pending.kind == PendingKind::FoundCity) {
+    int before = g_pending.cities;
+    g_pending = {};
+    RefreshShadow();
+    return OkJson(std::string("\"cities_before\":") + std::to_string(before) +
+                  ",\"cities_after\":" + std::to_string(game->total_cities) + ",\"changed\":true");
+  }
+  if (g_pending.kind == PendingKind::Goto && UnitAlive() && game->active_unit == unit) {
+    auto& u = Units()[unit];
+    bool moved = u.x != g_pending.x || u.y != g_pending.y;
+    int can = 0;
+    if (moved && !(u.x == g_pending.target_x && u.y == g_pending.target_y) && !SehCan(unit, &can) && can) {
+      int dir = StepToward(u.x, u.y, g_pending.target_x, g_pending.target_y);
+      HWND map = MapWindow();
+      if (dir >= 0 && map) {
+        SnapshotUnit();
+        PostKey(map, DirectionKey(dir));
+        KeepPumping(now);
+        return {};
+      }
+    }
+  }
+  g_pending = {};
   RefreshShadow();
-  auto* civ = CivAt(Human());
-  return OkJson(std::string("\"turn\":") + std::to_string(game->turn) +
-                ",\"year\":" + std::to_string(game->year) + ",\"gold\":" + std::to_string(civ->gold));
+  if (unit < 0 || unit >= kUnitSlots || Units()[unit].id == 0) {
+    return OkJson(std::string("\"index\":") + std::to_string(unit) + ",\"lost\":true,\"changed\":true");
+  }
+  return OkJson(UnitBrief(unit) + ",\"changed\":true");
 }
 
-void GameCancelEndTurn() { g_end_pending = false; }
+void GameCancelPending() { g_pending = {}; }
+
+void GameWakeUi(bool press_enter, bool press_escape) {
+  static DWORD last_log = 0;
+  DWORD now = GetTickCount();
+  if (now - last_log > 2000) {
+    last_log = now;
+    GameLog("wake ui enter=%d escape=%d pending=%d turn=%d", press_enter ? 1 : 0,
+            press_escape ? 1 : 0, static_cast<int>(g_pending.kind),
+            MatchLive() ? G()->turn : -1);
+  }
+  LPARAM flags = 0;
+  if (press_enter) flags |= kKickEnter;
+  if (press_escape) flags |= kKickEscape;
+  EnumWindows(KickWindow, flags);
+}

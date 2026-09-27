@@ -6,7 +6,6 @@ import ctypes
 import json
 import sys
 import time
-from ctypes import wintypes
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -50,58 +49,31 @@ def transact(payload, timeout_s=30):
     raise SystemExit(f"连接 {PIPE} 失败: {last}")
 
 
-def click_screen(x, y, hwnd):
+def click_screen(x, y, hwnd, repeats=2):
     user32 = ctypes.windll.user32
     if hwnd:
         user32.ShowWindow(hwnd, 9)
         user32.SetForegroundWindow(hwnd)
-        time.sleep(0.2)
-    for _ in range(2):
+        time.sleep(0.15)
+    for _ in range(max(1, repeats)):
         user32.SetCursorPos(int(x), int(y))
         time.sleep(0.05)
         user32.mouse_event(0x0002, 0, 0, 0, 0)
         time.sleep(0.05)
         user32.mouse_event(0x0004, 0, 0, 0, 0)
-        time.sleep(0.35)
+        time.sleep(0.3)
 
 
-def dialog_points(title):
-    user32 = ctypes.windll.user32
-    found = []
-
-    def top(hwnd, _lp):
-        if not user32.IsWindowVisible(hwnd):
-            return True
-        buf = ctypes.create_unicode_buffer(200)
-        user32.GetWindowTextW(hwnd, buf, 200)
-        if buf.value == title:
-            rect = wintypes.RECT()
-            user32.GetWindowRect(hwnd, ctypes.byref(rect))
-            area = (rect.right - rect.left) * (rect.bottom - rect.top)
-            if 4000 < area < 900 * 700:
-                found.append(hwnd)
-        return True
-
-    enum = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-    user32.EnumWindows(enum(top), 0)
-    if not found:
-        return None, []
-    parent = found[0]
-    rows = []
-
-    def child(hwnd, _lp):
-        rect = wintypes.RECT()
-        user32.GetWindowRect(hwnd, ctypes.byref(rect))
-        height = rect.bottom - rect.top
-        width = rect.right - rect.left
-        if 20 <= height <= 48 and width >= 80:
-            rows.append((rect.top, rect.left, height, (rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2))
-        return True
-
-    user32.EnumChildWindows(parent, enum(child), 0)
-    lines = sorted((row for row in rows if row[2] <= 32), key=lambda row: row[0])
-    buttons = sorted((row for row in rows if row[2] > 32), key=lambda row: row[1])
-    return parent, [(row[3], row[4]) for row in lines + buttons]
+def choose(request, timeout_s=30):
+    """Pick a dialog option. The DLL selects list rows itself; for controls it
+    returns screen coordinates, because the game ignores posted mouse input."""
+    response = transact(request, timeout_s=timeout_s)
+    click = response.pop("click", None)
+    if response.get("ok") and click:
+        click_screen(click["x"], click["y"], click.get("hwnd"), repeats=click.get("repeats", 1))
+        response["via"] = "mouse"
+    time.sleep(0.4)
+    return response
 
 
 def emit(response, record, request):
@@ -128,6 +100,9 @@ def build_parser():
 
     end = sub.add_parser("end-turn")
     end.add_argument("--timeout-ms", type=int, default=120000)
+
+    skip = sub.add_parser("skip-intro")
+    skip.add_argument("--timeout-ms", type=int, default=60000)
 
     ready = sub.add_parser("wait-ready")
     ready.add_argument("--timeout", type=int, default=60)
@@ -167,6 +142,8 @@ def request_from_args(args):
         return body
     if args.cmd == "end-turn":
         return {"op": "end_turn", "timeout_ms": args.timeout_ms}
+    if args.cmd == "skip-intro":
+        return {"op": "skip_intro", "timeout_ms": args.timeout_ms}
     if args.cmd == "act":
         name = "found_city" if args.name == "found-city" else args.name
         body = {"op": "act", "name": name}
@@ -232,31 +209,19 @@ def main(argv):
         return code
 
     if args.cmd == "act" and args.name == "menu":
-        menu = transact({"op": "menu"}, timeout_s=args.timeout)
-        options = (menu.get("menu") or {}).get("options") or []
-        if not menu.get("ok"):
-            return emit(menu, args.record, {"op": "menu"})
-        chosen = None
+        request = {"op": "act", "name": "menu"}
         if args.text:
-            chosen = next((item for item in options if item.get("text") == args.text), None)
-        elif args.button is not None and 0 <= args.button < len(options):
-            chosen = options[args.button]
-        if chosen is None:
-            missing = {"ok": False, "error": "illegal", "reason": "界面上没有这个选项", "menu": menu.get("menu")}
-            return emit(missing, args.record, {"op": "menu"})
-        parent, points = dialog_points(menu["menu"]["title"])
-        index = chosen["index"]
-        if parent is None or index >= len(points):
-            missing = {"ok": False, "error": "no_dialog", "reason": "找不到可点击的界面控件"}
-            return emit(missing, args.record, {"op": "act", "name": "menu"})
-        click_screen(points[index][0], points[index][1], parent)
-        time.sleep(0.4)
-        response = {"ok": True, "index": index, "text": chosen.get("text")}
-        return emit(response, args.record, {"op": "act", "name": "menu", "text": chosen.get("text")})
+            request["text"] = args.text
+        elif args.button is not None:
+            request["button"] = args.button
+        response = choose(request, timeout_s=args.timeout)
+        return emit(response, args.record, request)
 
     request = request_from_args(args)
     wait = args.timeout
     if args.cmd == "end-turn":
+        wait = max(wait, args.timeout_ms / 1000 + 5)
+    if args.cmd == "skip-intro":
         wait = max(wait, args.timeout_ms / 1000 + 5)
     response = transact(request, timeout_s=wait)
     if args.cmd == "snapshot" and args.out:

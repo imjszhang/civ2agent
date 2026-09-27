@@ -77,7 +77,9 @@ std::string WithId(int id, const std::string& obj) {
 }
 
 bool SafeOp(const Job& job) {
-  if (job.op == "hello" || job.op == "snapshot" || job.op == "events" || job.op == "menu") return true;
+  if (job.op == "hello" || job.op == "snapshot" || job.op == "events" || job.op == "menu" ||
+      job.op == "skip_intro")
+    return true;
   if (job.op == "act" && (job.name == "respond" || job.name == "menu")) return true;
   return false;
 }
@@ -99,30 +101,21 @@ void ExecuteJob(const std::shared_ptr<Job>& job) {
     FinishJob(job, WithId(job->id, GameMenuJson()));
     return;
   }
-  if (job->op == "act") {
-    g_abort_on_dialog = job->name != "respond";
-    std::string resp = GameActJson(job->name, job->unit, job->city, job->x, job->y, job->tech, job->tax,
-                                   job->science, job->button, job->kind, job->order);
-    g_abort_on_dialog = false;
+  if (job->op == "skip_intro") {
+    std::string resp = GameBeginSkipIntroJson();
+    if (resp.empty() && GamePendingActive()) return;
     if (!IsDone(job)) FinishJob(job, WithId(job->id, resp));
     return;
   }
-  if (job->op == "end_turn") {
-    g_abort_on_dialog = true;
-    std::string early = GameBeginEndTurnJson();
-    if (!early.empty()) {
-      g_abort_on_dialog = false;
-      FinishJob(job, WithId(job->id, early));
-      return;
-    }
-    if (IsDone(job)) {
-      g_abort_on_dialog = false;
-      return;
-    }
-    if (GameEndTurnDone()) {
-      g_abort_on_dialog = false;
-      FinishJob(job, WithId(job->id, GameFinishEndTurnJson()));
-    }
+  if (job->op == "act" || job->op == "end_turn") {
+    g_abort_on_dialog = job->op == "end_turn" || (job->name != "respond" && job->name != "menu");
+    std::string resp = job->op == "end_turn"
+                           ? GameBeginEndTurnJson()
+                           : GameActJson(job->name, job->unit, job->city, job->x, job->y, job->tech, job->tax,
+                                         job->science, job->button, job->kind, job->order);
+    if (resp.empty() && GamePendingActive()) return;
+    g_abort_on_dialog = false;
+    if (!IsDone(job)) FinishJob(job, WithId(job->id, resp));
     return;
   }
   FinishJob(job, WithId(job->id, ErrJson("illegal", "未知 op")));
@@ -131,21 +124,24 @@ void ExecuteJob(const std::shared_ptr<Job>& job) {
 void Pump() {
   GameObserveDialog();
   if (g_running && IsAbandoned(g_running)) {
-    GameCancelEndTurn();
+    GameCancelPending();
     g_abort_on_dialog = false;
     g_running.reset();
   }
   if (g_running && !IsDone(g_running) && g_abort_on_dialog && GameDialogOpen()) {
     std::string resp;
     if (GameTakeModalAbort(resp)) {
-      GameCancelEndTurn();
+      GameCancelPending();
       g_abort_on_dialog = false;
       FinishJob(g_running, WithId(g_running->id, resp));
     }
   }
-  if (g_running && !IsDone(g_running) && GameEndTurnPending() && GameEndTurnDone()) {
-    g_abort_on_dialog = false;
-    FinishJob(g_running, WithId(g_running->id, GameFinishEndTurnJson()));
+  if (g_running && !IsDone(g_running) && GamePendingActive()) {
+    std::string resp = GamePollPending(g_depth);
+    if (!resp.empty()) {
+      g_abort_on_dialog = false;
+      FinishJob(g_running, WithId(g_running->id, resp));
+    }
   }
   if (g_running && IsDone(g_running)) g_running.reset();
   if (g_running) return;
@@ -182,33 +178,46 @@ void WakeGame() {
       0);
 }
 
-bool HookDispatch() {
-  auto base = reinterpret_cast<std::uint8_t*>(GetModuleHandleA(nullptr));
+// Civ2UIA runs its own wait loop while the game sits on the end-of-turn
+// prompt, and that loop dispatches through Civ2UIA's imports, not civ2.exe's.
+bool HookModule(HMODULE module) {
+  auto base = reinterpret_cast<std::uint8_t*>(module);
+  if (!base) return false;
   auto dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
   auto nt = reinterpret_cast<IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
   auto& dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
   if (!dir.VirtualAddress) return false;
   auto imp = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(base + dir.VirtualAddress);
+  bool hooked = false;
   for (; imp->Name; ++imp) {
     const char* dll = reinterpret_cast<const char*>(base + imp->Name);
     if (_stricmp(dll, "USER32.dll") != 0 && _stricmp(dll, "user32.dll") != 0) continue;
+    // Matching the bound address works for Civ2UIA too, whose import table has
+    // no name thunks.
+    auto real = reinterpret_cast<ULONG_PTR>(GetProcAddress(GetModuleHandleA("user32.dll"), "DispatchMessageA"));
     auto thunk = reinterpret_cast<IMAGE_THUNK_DATA*>(base + imp->FirstThunk);
-    auto orig = reinterpret_cast<IMAGE_THUNK_DATA*>(base + imp->OriginalFirstThunk);
-    for (; orig->u1.AddressOfData; ++orig, ++thunk) {
-      if (IMAGE_SNAP_BY_ORDINAL(orig->u1.Ordinal)) continue;
-      auto name = reinterpret_cast<IMAGE_IMPORT_BY_NAME*>(base + orig->u1.AddressOfData);
-      if (strcmp(name->Name, "DispatchMessageA") != 0) continue;
+    for (; thunk->u1.Function; ++thunk) {
+      if (thunk->u1.Function == reinterpret_cast<ULONG_PTR>(DispatchHook)) {
+        hooked = true;
+        continue;
+      }
+      if (thunk->u1.Function != real) continue;
       DWORD old = 0;
       VirtualProtect(&thunk->u1.Function, sizeof(void*), PAGE_EXECUTE_READWRITE, &old);
-      g_orig_dispatch = reinterpret_cast<DispatchFn>(thunk->u1.Function);
+      if (!g_orig_dispatch) g_orig_dispatch = reinterpret_cast<DispatchFn>(thunk->u1.Function);
       thunk->u1.Function = reinterpret_cast<ULONG_PTR>(DispatchHook);
       VirtualProtect(&thunk->u1.Function, sizeof(void*), old, &old);
-      GameLog("hooked DispatchMessageA");
-      return true;
+      hooked = true;
     }
   }
-  GameLog("DispatchMessageA import not found");
-  return false;
+  return hooked;
+}
+
+bool HookDispatch() {
+  bool game = HookModule(GetModuleHandleA(nullptr));
+  bool uia = HookModule(GetModuleHandleA("Civ2UIA.dll"));
+  GameLog("DispatchMessageA hooks: civ2.exe=%d Civ2UIA.dll=%d", game, uia);
+  return game;
 }
 
 class Parser {
@@ -377,7 +386,9 @@ void ServeLoop() {
           continue;
         }
         if (job->op == "end-turn") job->op = "end_turn";
+        if (job->op == "skip-intro") job->op = "skip_intro";
         if (job->op == "end_turn" && job->timeout_ms == 8000) job->timeout_ms = 120000;
+        if (job->op == "skip_intro" && job->timeout_ms == 8000) job->timeout_ms = 60000;
         {
           std::lock_guard<std::mutex> lock(g_qmu);
           g_queue.push_back(job);
@@ -386,8 +397,20 @@ void ServeLoop() {
         std::string resp;
         {
           std::unique_lock<std::mutex> lock(job->mu);
-          bool signaled = job->cv.wait_for(lock, std::chrono::milliseconds(job->timeout_ms),
-                                           [&] { return job->done; });
+          auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(job->timeout_ms);
+          bool signaled = false;
+          while (!signaled) {
+            auto now = std::chrono::steady_clock::now();
+            if (now >= deadline) break;
+            auto slice = deadline - now;
+            if (slice > std::chrono::milliseconds(500)) slice = std::chrono::milliseconds(500);
+            signaled = job->cv.wait_for(lock, slice, [&] { return job->done; });
+            if (signaled) break;
+            lock.unlock();
+            GameWakeUi(job->op == "end_turn", job->op == "skip_intro");
+            WakeGame();
+            lock.lock();
+          }
           if (!signaled) {
             job->abandoned = true;
             job->done = true;

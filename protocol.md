@@ -71,7 +71,15 @@
 {"op":"end_turn","timeout_ms":120000}
 ```
 
-只把 `word_flags` 的 bit 1（`0x655AEE |= 2`）置上，阻塞到回合或年份变化。不能把 `0x628044` 清零，那个字节为 0 时游戏会退出整局回到主菜单。中途弹出确认框时返回 `modal_open`，应答后需要再发一次 `end_turn`。
+结束回合走游戏自己的界面路径，调用返回时画面上的回合和年份已经更新。不能把 `0x628044` 清零，那个字节为 0 时游戏会退出整局回到主菜单。中途弹出确认框时返回 `modal_open`，应答后需要再发一次 `end_turn`。
+
+`skip_intro`
+
+```json
+{"op":"skip_intro","timeout_ms":60000}
+```
+
+启动后跳过开场动画，直到主菜单出现。已经在主菜单或对局里时直接返回，`skipped` 为 false。开场影片卡住界面线程时，命令会向游戏窗口发 Escape 和点击。
 
 ## 命令行
 
@@ -85,6 +93,7 @@ civ2agent\build\bin\civ2agent-launch.exe
 
 ```text
 python civ2agent\cli\civ2ctl.py wait-ready
+python civ2agent\cli\civ2ctl.py skip-intro
 python civ2agent\cli\civ2ctl.py snapshot -o state.json
 python civ2agent\cli\civ2ctl.py act order --unit 3 --order irrigate
 python civ2agent\cli\civ2ctl.py act respond --button 0
@@ -100,6 +109,7 @@ python civ2agent\cli\civ2ctl.py replay session.jsonl --record trace.jsonl
 工具实现就是调用上面的 CLI，不要另读内存。
 
 - `get_state`：`civ2ctl.py snapshot`。需要全图时加 `--debug`
+- `skip_intro`：`civ2ctl.py skip-intro`。启动后先跳过开场动画，再开局或读档
 - `act`：`civ2ctl.py act ...`。返回 `modal_open` 时先读 `dialog.buttons`，再 `act respond`
 - `end_turn`：`civ2ctl.py end-turn`，然后 `events` 查看战斗和城池变化
 

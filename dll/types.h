@@ -33,7 +33,6 @@ constexpr std::uint32_t kVaCivHasTech = 0x00402E7D;
 constexpr std::uint32_t kVaGetString = 0x00403387;
 constexpr std::uint32_t kVaTurnToYear = 0x00403418;
 constexpr std::uint32_t kVaBuildCity = 0x00489BE2;
-constexpr std::uint32_t kVaClearBusy = 0x00484D3B;
 constexpr int kUnitSlots = 2048;
 constexpr int kCitySlots = 256;
 constexpr int kCivSlots = 8;

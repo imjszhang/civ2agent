@@ -51,7 +51,6 @@ using FnHasTech = int(__cdecl*)(int, int);
 using FnStr = char*(__cdecl*)(int);
 using FnYear = int(__cdecl*)(int);
 using FnBuild = void(__cdecl*)(int);
-using FnBusy = void(__cdecl*)();
 
 FnMove g_move = nullptr;
 FnProcess g_process = nullptr;
@@ -65,7 +64,6 @@ FnHasTech g_has_tech = nullptr;
 FnStr g_string = nullptr;
 FnYear g_year_fn = nullptr;
 FnBuild g_build = nullptr;
-FnBusy g_clear_busy = nullptr;
 
 template <typename T>
 T* At(std::uint32_t va) {
@@ -172,15 +170,6 @@ bool LimitsAllowed() {
   }
   fclose(f);
   return ok;
-}
-
-int SehCall0(void(__cdecl* fn)()) {
-  __try {
-    fn();
-    return 0;
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
-    return 1;
-  }
 }
 
 int SehMove(int unit, int dir) {
@@ -764,7 +753,6 @@ void GameInit() {
   g_string = reinterpret_cast<FnStr>(g_base + (kVaGetString - kImageBase));
   g_year_fn = reinterpret_cast<FnYear>(g_base + (kVaTurnToYear - kImageBase));
   g_build = reinterpret_cast<FnBuild>(g_base + (kVaBuildCity - kImageBase));
-  g_clear_busy = reinterpret_cast<FnBusy>(g_base + (kVaClearBusy - kImageBase));
   GameLog("civ2agent init base=%p hash=%s ok=%d limits=%d", g_base, g_hash.c_str(), g_hash_ok,
           g_limits_ok);
 }
@@ -1196,7 +1184,6 @@ std::string GameBeginEndTurnJson() {
   g_end_year = game->year;
   g_end_pending = true;
   game->word_flags = static_cast<std::uint16_t>(game->word_flags | 0x2);
-  if (SehCall0(g_clear_busy)) return ErrJson("game_fault", "结束回合标志调用异常");
   HWND top = GetForegroundWindow();
   if (top) PostMessageA(top, WM_NULL, 0, 0);
   return {};

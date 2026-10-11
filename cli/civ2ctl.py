@@ -4,6 +4,7 @@
 import argparse
 import ctypes
 import json
+from ctypes import wintypes
 import sys
 import time
 
@@ -49,30 +50,84 @@ def transact(payload, timeout_s=30):
     raise SystemExit(f"连接 {PIPE} 失败: {last}")
 
 
+def root_window_at(x, y):
+    user32 = ctypes.windll.user32
+    user32.WindowFromPoint.argtypes = [wintypes.POINT]
+    user32.WindowFromPoint.restype = wintypes.HWND
+    user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+    user32.GetAncestor.restype = wintypes.HWND
+    hit = user32.WindowFromPoint(wintypes.POINT(int(x), int(y)))
+    return (user32.GetAncestor(hit, 2) or 0) if hit else 0  # GA_ROOT
+
+
 def click_screen(x, y, hwnd, repeats=2):
+    """Click with the real cursor, only while the point is on the dialog.
+    Returns False without clicking when another window covers it."""
     user32 = ctypes.windll.user32
     if hwnd:
         user32.ShowWindow(hwnd, 9)
         user32.SetForegroundWindow(hwnd)
         time.sleep(0.15)
+    clicked = False
     for _ in range(max(1, repeats)):
+        # A row can close the dialog on the first click; the second must not
+        # land on whatever is underneath. Only the low 32 bits of a handle count.
+        if not hwnd or (root_window_at(x, y) & 0xFFFFFFFF) != (hwnd & 0xFFFFFFFF):
+            break
         user32.SetCursorPos(int(x), int(y))
         time.sleep(0.05)
         user32.mouse_event(0x0002, 0, 0, 0, 0)
         time.sleep(0.05)
         user32.mouse_event(0x0004, 0, 0, 0, 0)
+        clicked = True
         time.sleep(0.3)
+    return clicked
 
 
-def choose(request, timeout_s=30):
-    """Pick a dialog option. The DLL selects list rows itself; for controls it
-    returns screen coordinates, because the game ignores posted mouse input."""
+def current_dialog():
+    """The dialog on screen, or None. A failed query reads as no dialog."""
+    try:
+        response = transact({"op": "menu"}, timeout_s=5)
+    except SystemExit:
+        return None
+    return response.get("menu") if response.get("ok") else None
+
+
+def dialog_key(dialog):
+    if not dialog:
+        return None
+    return (dialog.get("title"), dialog.get("text"), tuple(o.get("text") for o in dialog.get("options") or []))
+
+
+def is_choice(request):
+    return request.get("op") == "act" and request.get("name") in ("respond", "menu")
+
+
+def choose(request, timeout_s=30, settle_s=2.0):
+    """Answer the dialog on screen and report what replaced it. The DLL picks
+    list rows itself; for buttons and option rows it returns screen
+    coordinates, because the game ignores posted mouse input."""
+    before = dialog_key(current_dialog())
     response = transact(request, timeout_s=timeout_s)
     click = response.pop("click", None)
-    if response.get("ok") and click:
-        click_screen(click["x"], click["y"], click.get("hwnd"), repeats=click.get("repeats", 1))
+    if not response.get("ok"):
+        return response
+    if click:
+        if not click_screen(click["x"], click["y"], click.get("hwnd"), repeats=click.get("repeats", 1)):
+            response.update(ok=False, error="window_covered", reason="游戏对话框被其他窗口挡住，没有点击")
+            return response
         response["via"] = "mouse"
-    time.sleep(0.4)
+    deadline = time.time() + settle_s
+    after = current_dialog()
+    while dialog_key(after) == before and time.time() < deadline:
+        time.sleep(0.2)
+        after = current_dialog()
+    if after is None:
+        # The next dialog in a chain can open a moment after this one closes.
+        time.sleep(0.4)
+        after = current_dialog()
+    response["changed"] = dialog_key(after) != before
+    response["dialog"] = after
     return response
 
 
@@ -203,13 +258,14 @@ def main(argv):
                     continue
                 item = json.loads(raw)
                 request = item.get("request", item)
-                response = transact(request, timeout_s=max(args.timeout, int(request.get("timeout_ms", 0)) / 1000 + 5))
+                wait = max(args.timeout, int(request.get("timeout_ms", 0)) / 1000 + 5)
+                response = choose(request, timeout_s=wait) if is_choice(request) else transact(request, timeout_s=wait)
                 if emit(response, args.record, request) != 0:
                     code = 1
         return code
 
-    if args.cmd == "act" and args.name == "menu":
-        request = {"op": "act", "name": "menu"}
+    if args.cmd == "act" and args.name in ("respond", "menu"):
+        request = {"op": "act", "name": args.name}
         if args.text:
             request["text"] = args.text
         elif args.button is not None:

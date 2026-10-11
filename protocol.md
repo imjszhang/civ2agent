@@ -14,8 +14,9 @@
 - `unsupported`：不是单人游戏
 - `not_your_turn`：当前行动文明不是人类玩家
 - `illegal`：单位、坐标、税率或按钮不合法
-- `modal_open`：有对话框。响应里带 `dialog`。先 `act respond` 再继续
+- `modal_open`：有对话框。响应里带 `dialog`，见下文「对话框」。先 `act respond` 再继续
 - `no_dialog`：没有可应答的对话框
+- `window_covered`：要点的位置被别的窗口挡住，`civ2ctl.py` 没有点击
 - `game_fault`：内部函数调用异常，游戏进程仍在
 - `timeout`：游戏线程在时限内没有完成
 
@@ -37,7 +38,7 @@
 {"op":"snapshot","debug":false}
 ```
 
-默认只含人类玩家已知信息：回合、年份、金币、税率、研究、己方单位、己方城市、可见地形、条约、活动单位、当前对话框。`debug: true` 才返回全图和其他文明。
+默认只含人类玩家已知信息：回合、年份、金币、税率、研究、己方单位、己方城市、可见地形、条约、活动单位、当前对话框。`debug: true` 才返回全图和其他文明。不在对局中但有对话框（主菜单、开局设置）时，返回 `in_game: false` 和 `menu`，与 `menu` 请求相同。
 
 `events`
 
@@ -45,7 +46,7 @@
 {"op":"events"}
 ```
 
-取走并清空自上次以来的事件：`dialog`、`dialog_closed`、`unit_lost`、`unit_damaged`、`city_captured`、`research`。
+取走并清空自上次以来的事件：`dialog`（带 `dialog` 对象）、`dialog_closed`、`unit_lost`、`unit_damaged`、`city_captured`、`research`。
 
 `act`
 
@@ -63,7 +64,7 @@
 - `produce`：`city`、`kind` 为 `unit` 或 `improvement`、`item` 为编号。建筑编号从 1 起，写入游戏时取负号
 - `research`：`tech`，`-1` 表示清空
 - `rates`：`tax`、`science`，各自 0 到 10，合计不超过 10。奢侈为剩余部分
-- `respond`：`button`，对话框按钮下标，从 0 起
+- `respond`：`button` 为 `dialog.options` 的下标，或 `text` 为选项文字。见下文「对话框」
 
 `end_turn`
 
@@ -71,7 +72,7 @@
 {"op":"end_turn","timeout_ms":120000}
 ```
 
-结束回合走游戏自己的界面路径，调用返回时画面上的回合和年份已经更新。不能把 `0x628044` 清零，那个字节为 0 时游戏会退出整局回到主菜单。中途弹出确认框时返回 `modal_open`，应答后需要再发一次 `end_turn`。
+结束回合走游戏自己的界面路径，调用返回时画面上的回合和年份已经更新。不能把 `0x628044` 清零，那个字节为 0 时游戏会退出整局回到主菜单。中途弹出对话框时返回 `modal_open`，带 `turn` 和 `turn_ended`。`turn_ended` 为 false 时回合还没结束，应答后再发一次 `end_turn` 继续等。为 true 时已经进入新回合，应答后直接操作，不要再发 `end_turn`，否则会把新回合也结束掉。
 
 `skip_intro`
 
@@ -80,6 +81,41 @@
 ```
 
 启动后跳过开场动画，直到主菜单出现。已经在主菜单或对局里时直接返回，`skipped` 为 false。开场影片卡住界面线程时，命令会向游戏窗口发 Escape 和点击。
+
+## 对话框
+
+`menu`
+
+```json
+{"op":"menu"}
+```
+
+返回 `in_game` 和 `menu`，`menu` 是当前对话框。主菜单、开局设置和对局里都能用。没有对话框时返回 `no_dialog`。
+
+`menu`、`modal_open` 响应、`snapshot` 的 `dialog` 和 `dialog` 事件用同一种对象：
+
+- `title`、`text`：标题和正文
+- `kind`：`list` 是游戏画的列表（主菜单、开局设置、选研究），`controls` 是按钮和输入框（城市命名、提示框）
+- `default`：只有 `list` 有，打开时高亮的行。高亮移动后它不变
+- `options`：可选项，`index` 从 0 起，`text` 是显示的文字，列表行另有游戏内部的 `id`。顺序是列表行或选项行，然后是按钮，最后是对话框自带的「确定」「取消」
+
+选一项：
+
+```json
+{"op":"act","name":"respond","text":"确定"}
+```
+
+`button` 填 `options` 的下标，`text` 填选项文字，两者都给时按 `text`。`act menu` 与 `act respond` 相同。
+
+列表行和按钮都不接受投递的鼠标消息。DLL 只返回屏幕坐标 `click`，由 `civ2ctl.py` 把游戏窗口切到前台，用真实鼠标点击。列表行双击，选中并确认。所以应答必须经过 `civ2ctl.py`，期间不要动鼠标。要点的位置被别的窗口挡住时返回 `window_covered`，不点击。列表行的控件还没画出来时，只能确认 `default` 那一行，其他行返回 `illegal`，稍后再发一次即可。
+
+`civ2ctl.py` 应答后最多等 2 秒，另外返回：
+
+- `via`：`keys` 或 `mouse`
+- `changed`：对话框是否已关闭或换成了别的。`false` 表示没生效，可以重试
+- `dialog`：之后的对话框，没有则为 `null`
+
+有对话框时发出的其他 `act` 和 `end_turn` 立即返回 `modal_open`，不会执行，也不会替你应答。
 
 ## 命令行
 
@@ -96,13 +132,15 @@ python civ2agent\cli\civ2ctl.py wait-ready
 python civ2agent\cli\civ2ctl.py skip-intro
 python civ2agent\cli\civ2ctl.py snapshot -o state.json
 python civ2agent\cli\civ2ctl.py act order --unit 3 --order irrigate
+python civ2agent\cli\civ2ctl.py menu
+python civ2agent\cli\civ2ctl.py act respond --text 开始新游戏
 python civ2agent\cli\civ2ctl.py act respond --button 0
 python civ2agent\cli\civ2ctl.py end-turn
 python civ2agent\cli\civ2ctl.py events
-python civ2agent\cli\civ2ctl.py replay session.jsonl --record trace.jsonl
+python civ2agent\cli\civ2ctl.py --record trace.jsonl replay session.jsonl
 ```
 
-`--record` 把每一对请求和响应追加成 jsonl。`replay` 接受这种文件，也接受每行一个原始请求。
+`--record` 和 `--timeout` 要写在子命令前面。`--record` 把每一对请求和响应追加成 jsonl。`replay` 接受这种文件，也接受每行一个原始请求，其中的 `respond` 同样会点鼠标。
 
 ## Agent 工具
 
@@ -110,7 +148,8 @@ python civ2agent\cli\civ2ctl.py replay session.jsonl --record trace.jsonl
 
 - `get_state`：`civ2ctl.py snapshot`。需要全图时加 `--debug`
 - `skip_intro`：`civ2ctl.py skip-intro`。启动后先跳过开场动画，再开局或读档
-- `act`：`civ2ctl.py act ...`。返回 `modal_open` 时先读 `dialog.buttons`，再 `act respond`
+- `act`：`civ2ctl.py act ...`。返回 `modal_open` 时先读 `dialog.options`，再 `act respond --text ...`。应答会移动真实鼠标
+- `menu`：`civ2ctl.py menu`。主菜单和开局设置都是对话框，用它看选项，再 `act respond`
 - `end_turn`：`civ2ctl.py end-turn`，然后 `events` 查看战斗和城池变化
 
 默认遵守战争迷雾。`--debug` 会暴露未探索格和其他文明，只在排错时使用。

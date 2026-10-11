@@ -147,12 +147,26 @@ void Pump() {
   if (g_running) return;
 
   std::shared_ptr<Job> job;
+  bool blocked_by_dialog = false;
   {
     std::lock_guard<std::mutex> lock(g_qmu);
     if (g_queue.empty()) return;
-    if (g_depth > 1 && !SafeOp(*g_queue.front())) return;
+    if (g_depth > 1 && !SafeOp(*g_queue.front())) {
+      // Inside a dialog's own loop a game command cannot run. Answer it with
+      // the dialog now: left queued it would time out and run late, and
+      // end_turn's wake-up Enter would confirm a dialog the agent never saw.
+      if (!GameDialogOpen()) return;
+      blocked_by_dialog = true;
+    }
     job = g_queue.front();
     g_queue.pop_front();
+  }
+  if (IsAbandoned(job)) return;  // the client already got a timeout
+  if (blocked_by_dialog) {
+    std::string resp;
+    if (!GameTakeModalAbort(resp)) resp = ErrJson("modal_open", "出现对话框");
+    FinishJob(job, WithId(job->id, resp));
+    return;
   }
   g_running = job;
   ExecuteJob(job);

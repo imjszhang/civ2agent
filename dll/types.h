@@ -238,7 +238,6 @@ static_assert(offsetof(UnitType, role) == 0x12, "role");
 static_assert(sizeof(RulesCivilize) == 0x10, "rules");
 
 constexpr int kDlgNumButtons = 0x34;
-constexpr int kDlgPressed = 0xDC;
 constexpr int kDlgTitle = 0x134;
 constexpr int kDlgFirstText = 0x230;
 constexpr int kDlgListSelected = 0x220;
@@ -246,8 +245,4 @@ constexpr int kDlgListHead = 0x228;
 constexpr int kListId = 0x04;
 constexpr int kListText = 0x08;
 constexpr int kListNext = 0x10;
-constexpr int kDlgButtonControls = 0x274;
 constexpr int kDlgButtonTexts = 0x294;
-constexpr int kButtonStride = 0x3C;
-constexpr int kButtonCode = 0x04;
-constexpr int kButtonHwnd = 0x1C;

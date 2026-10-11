@@ -307,12 +307,15 @@ std::string ReadGameText(const char* s, int cap) {
   return out;
 }
 
+std::string DialogOptionsJson(void* dlg);
+
+// Every dialog report carries the same numbered options that act respond
+// picks from, so an index read from modal_open or an event is valid there.
 std::string DialogJson() {
   void* dlg = DialogPtr();
   if (!dlg) return "null";
   auto* base = static_cast<char*>(dlg);
   const char* title = *reinterpret_cast<char**>(base + kDlgTitle);
-  int buttons = *reinterpret_cast<int*>(base + kDlgNumButtons);
   std::string body;
   auto* line = *reinterpret_cast<char**>(base + kDlgFirstText);
   int lines = 0;
@@ -323,16 +326,8 @@ std::string DialogJson() {
     line = *reinterpret_cast<char**>(line + 0x1C);
     ++lines;
   }
-  std::string out = "{\"title\":" + JsonString(ReadGameText(title, 120)) + ",\"text\":" +
-                    JsonString(body) + ",\"buttons\":[";
-  auto** texts = reinterpret_cast<char**>(base + kDlgButtonTexts);
-  for (int i = 0; i < buttons && i < 6; ++i) {
-    if (i) out += ',';
-    const char* t = Readable(texts + i, sizeof(char*)) ? texts[i] : nullptr;
-    out += JsonString(ReadGameText(t, 80));
-  }
-  out += "]}";
-  return out;
+  return "{\"title\":" + JsonString(ReadGameText(title, 120)) + ",\"text\":" + JsonString(body) + "," +
+         DialogOptionsJson(dlg) + "}";
 }
 
 void PushEvent(const std::string& json_object) { g_events.push_back(json_object); }
@@ -694,6 +689,20 @@ std::vector<MenuChoice> BuildMenuChoices(void* dlg, bool* is_list) {
       choice.line = true;
       choices.push_back(choice);
     }
+  } else if (lines.size() == list.size()) {
+    // List rows are real controls laid out column by column, in list order.
+    // Posted arrow keys do not move the highlight, so rows are clicked too.
+    std::sort(lines.begin(), lines.end(), [](HWND a, HWND b) {
+      RECT ra{}, rb{};
+      GetWindowRect(a, &ra);
+      GetWindowRect(b, &rb);
+      if (ra.left != rb.left) return ra.left < rb.left;
+      return ra.top < rb.top;
+    });
+    for (size_t i = 0; i < list.size(); ++i) {
+      choices[i].hwnd = lines[i];
+      choices[i].line = true;
+    }
   }
   // Buttons without a caption in ButtonTexts are the dialog's own OK and
   // Cancel, laid out after the captioned ones.
@@ -738,19 +747,17 @@ void PostKey(HWND hwnd, UINT vk) {
   PostMessageA(hwnd, WM_KEYUP, vk, up);
 }
 
-std::string MenuJsonObject() {
-  void* dlg = DialogPtr();
-  if (!dlg) return ErrJson("no_dialog", "没有打开的界面");
-  std::string title;
-  std::vector<std::string> ignored;
-  CollectMenuLabels(dlg, title, ignored);
+std::string DialogOptionsJson(void* dlg) {
   bool is_list = false;
   std::vector<MenuChoice> choices = BuildMenuChoices(dlg, &is_list);
-  int selected = -1;
-  if (is_list) ReadDialogList(dlg, &selected);
-  std::string out = std::string("\"in_game\":") + (MatchLive() ? "true" : "false") + ",\"menu\":{\"title\":" +
-                    JsonString(title) + ",\"kind\":" + JsonString(is_list ? "list" : "controls");
-  if (is_list) out += ",\"selected\":" + std::to_string(selected);
+  std::string out = std::string("\"kind\":") + JsonString(is_list ? "list" : "controls");
+  if (is_list) {
+    // The row highlighted when the list opened; the dialog does not update it
+    // as the highlight moves.
+    int start = -1;
+    ReadDialogList(dlg, &start);
+    out += ",\"default\":" + std::to_string(start);
+  }
   out += ",\"options\":[";
   for (size_t i = 0; i < choices.size(); ++i) {
     if (i) out += ',';
@@ -758,14 +765,18 @@ std::string MenuJsonObject() {
     if (choices[i].list_id >= 0) out += ",\"id\":" + std::to_string(choices[i].list_id);
     out += "}";
   }
-  out += "]}";
-  return OkJson(out);
+  out += "]";
+  return out;
 }
 
-// List rows are drawn by the dialog itself, so they are picked with the arrow
-// keys and Enter. Buttons and menu rows are real controls that ignore posted
-// mouse messages; for those the caller gets screen coordinates and clicks
-// with the real cursor.
+std::string MenuJsonObject() {
+  if (!DialogPtr()) return ErrJson("no_dialog", "没有打开的界面");
+  return OkJson(std::string("\"in_game\":") + (MatchLive() ? "true" : "false") + ",\"menu\":" + DialogJson());
+}
+
+// Rows and buttons are real controls that ignore posted mouse messages; for
+// those the caller gets screen coordinates and clicks with the real cursor.
+// Rows take a double click, which selects and confirms.
 std::string ClickMenuOption(int index, const std::string& text) {
   void* dlg = DialogPtr();
   if (!dlg) return ErrJson("no_dialog", "没有打开的界面");
@@ -783,15 +794,16 @@ std::string ClickMenuOption(int index, const std::string& text) {
   if (index < 0 || index >= static_cast<int>(choices.size())) return ErrJson("illegal", "选项下标超出范围");
   const MenuChoice& choice = choices[index];
   std::string head = std::string("\"index\":") + std::to_string(index) + ",\"text\":" + JsonString(choice.text);
-  if (choice.list_index >= 0) {
+  if (choice.list_index >= 0 && !choice.hwnd) {
+    // Without row controls (not drawn yet, or a scrolling list) only the row
+    // highlighted at open can be confirmed: Enter takes the live highlight,
+    // and the list's recorded row is where it started.
     HWND hwnd = DialogWindow(dlg);
     if (!hwnd) return ErrJson("no_dialog", "找不到对话框窗口");
-    int selected = -1;
-    ReadDialogList(dlg, &selected);
-    if (selected < 0) selected = 0;
-    int delta = choice.list_index - selected;
-    for (int i = 0; i < delta; ++i) PostKey(hwnd, VK_DOWN);
-    for (int i = 0; i < -delta; ++i) PostKey(hwnd, VK_UP);
+    int start = -1;
+    ReadDialogList(dlg, &start);
+    if (choice.list_index != (start < 0 ? 0 : start))
+      return ErrJson("illegal", "找不到这一行的控件，只能确认默认行；稍后重新读取 menu 再试");
     PostKey(hwnd, VK_RETURN);
     return OkJson(head + ",\"via\":\"keys\"");
   }
@@ -1340,48 +1352,20 @@ std::string GameEventsJson() {
 std::string GameActJson(const std::string& name, int unit, int city, int x, int y, int id, int tax,
                         int science, int button, const std::string& kind, const std::string& order) {
   std::string err;
-  if (name == "menu" || name == "respond") {
+  // respond and menu are the same command: pick an entry of the dialog's
+  // options by index (button) or by exact text, which arrives in order.
+  if (name == "respond" || name == "menu") {
     if (Blocked(err)) return err;
-    if (name == "respond" && DialogPtr()) {
-      int buttons = *reinterpret_cast<int*>(static_cast<char*>(DialogPtr()) + kDlgNumButtons);
-      if (buttons > 0 && order.empty()) return ClickMenuOption(button, "");
-    }
-    if (name == "menu" || (name == "respond" && DialogPtr() &&
-                           *reinterpret_cast<int*>(static_cast<char*>(DialogPtr()) + kDlgNumButtons) <= 0)) {
-      return ClickMenuOption(button, order);
-    }
+    return ClickMenuOption(button, order);
   }
   if (!RequireMatch(err)) return err;
-  if (DialogPtr() && name != "respond") {
+  if (DialogPtr()) {
     return std::string("{\"ok\":false,\"error\":\"modal_open\",\"reason\":\"已有对话框\",") +
            "\"dialog\":" + DialogJson() + "}";
   }
   auto* civ = CivAt(Human());
   int research_before = civ->researching;
   int future_before = civ->future_techs;
-
-  if (name == "respond") {
-    void* dlg = DialogPtr();
-    if (!dlg) return ErrJson("no_dialog", "没有打开的对话框");
-    auto* base = static_cast<char*>(dlg);
-    int buttons = *reinterpret_cast<int*>(base + kDlgNumButtons);
-    if (button < 0 || button >= buttons) return ErrJson("illegal", "按钮下标超出范围");
-    auto* controls = *reinterpret_cast<char**>(base + kDlgButtonControls);
-    int code = button;
-    HWND hwnd = nullptr;
-    if (controls && Readable(controls, kButtonStride * (button + 1))) {
-      char* btn = controls + button * kButtonStride;
-      code = *reinterpret_cast<int*>(btn + kButtonCode);
-      hwnd = *reinterpret_cast<HWND*>(btn + kButtonHwnd);
-    }
-    *reinterpret_cast<int*>(base + kDlgPressed) = code;
-    if (hwnd && IsWindow(hwnd)) PostMessageA(hwnd, BM_CLICK, 0, 0);
-    HWND top = GetForegroundWindow();
-    if (top) PostMessageA(top, WM_NULL, 0, 0);
-    RefreshShadow();
-    return OkJson(std::string("\"button\":") + std::to_string(button) + ",\"code\":" +
-                  std::to_string(code));
-  }
 
   if (name == "activate" || name == "move" || name == "goto" || name == "order" ||
       name == "found_city") {

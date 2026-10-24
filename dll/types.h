@@ -237,12 +237,47 @@ static_assert(sizeof(UnitType) == 0x14, "unit type");
 static_assert(offsetof(UnitType, role) == 0x12, "role");
 static_assert(sizeof(RulesCivilize) == 0x10, "rules");
 
+// Dialog object (*kVaPopup). Offsets and flags are from the control builder
+// 0x5A211C and the run body 0x5A5F34; names follow Civ2UIA's TDialogWindow.
+constexpr int kDlgNumEdits = 0x24;
+constexpr int kDlgNumLines = 0x28;
+constexpr int kDlgNumListItems = 0x2C;
+constexpr int kDlgNumButtonsStd = 0x30;
 constexpr int kDlgNumButtons = 0x34;
+constexpr int kDlgFlags = 0x3C;
+constexpr int kDlgListPage = 0x48;
 constexpr int kDlgTitle = 0x134;
 constexpr int kDlgFirstText = 0x230;
 constexpr int kDlgListSelected = 0x220;
 constexpr int kDlgListHead = 0x228;
+constexpr int kDlgEditControls = 0x270;
+constexpr int kDlgSysListControls = 0x278;
+constexpr int kDlgButtonTexts = 0x294;
+constexpr int kDlgButtonLayout = 0x2AC;  // {std type, left x} per button
+constexpr int kListFlags = 0x00;
 constexpr int kListId = 0x04;
 constexpr int kListText = 0x08;
+constexpr int kListPage = 0x0C;
 constexpr int kListNext = 0x10;
-constexpr int kDlgButtonTexts = 0x294;
+constexpr int kEditControlStride = 0x48;
+constexpr int kControlHwnd = 0x1C;
+
+constexpr std::uint32_t kDlgCheckboxes = 0x4;
+constexpr std::uint32_t kDlgCreated = 0x20;
+constexpr std::uint32_t kDlgCreatedParts = 0x200;
+constexpr std::uint32_t kDlgClosing = 0x400;
+constexpr std::uint32_t kDlgListbox = 0x1000;
+constexpr std::uint32_t kDlgChoose = 0x2000;
+constexpr std::uint32_t kDlgSystemListbox = 0x40000;
+constexpr std::uint32_t kDlgTwoLists = 0x400000;
+constexpr std::uint32_t kListDisabled = 0x1;
+constexpr int kDlgMaxRows = 40;
+constexpr int kButtonIdBase = 0x64;
+
+// The game's own handlers for one dialog answer; each acts on *kVaPopup.
+constexpr std::uint32_t kVaDlgButton = 0x005A3E56;      // cdecl (control id)
+constexpr std::uint32_t kVaDlgChooseRow = 0x005A3BAE;   // cdecl (unused, row index)
+constexpr std::uint32_t kVaDlgSelectRow = 0x005A17E9;   // thiscall (dlg; record, redraw)
+constexpr std::uint32_t kVaDlgClose = 0x005A3C58;       // cdecl ()
+constexpr std::uint32_t kVaDlgSysListDone = 0x005A3C83; // cdecl ()
+constexpr std::uint32_t kVaPopupCaptions = 0x00635A48;  // OK, Help, Cancel

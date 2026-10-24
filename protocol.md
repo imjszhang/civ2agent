@@ -95,9 +95,11 @@
 `menu`、`modal_open` 响应、`snapshot` 的 `dialog` 和 `dialog` 事件用同一种对象：
 
 - `title`、`text`：标题和正文
-- `kind`：`list` 是游戏画的列表（主菜单、开局设置、选研究），`controls` 是按钮和输入框（城市命名、提示框）
+- `kind`：`list` 表示有可选的行（列表行或选项行，如主菜单、开局设置、选研究），`controls` 表示只有按钮和输入框（城市命名、提示框）
 - `default`：只有 `list` 有，打开时高亮的行。高亮移动后它不变
-- `options`：可选项，`index` 从 0 起，`text` 是显示的文字，列表行另有游戏内部的 `id`。顺序是列表行或选项行，然后是按钮，最后是对话框自带的「确定」「取消」
+- `via`：`game` 表示 `act respond` 调用对话框自己的处理函数，`mouse` 表示要用真实鼠标点（复选框、图标行、双列表）
+- `options`：可选项，`index` 从 0 起，`text` 是显示的文字，列表行另有游戏内部的 `id`，灰色不可选的行带 `disabled: true`。顺序是列表行或选项行，然后是按钮
+- `edits`：有输入框时才有，每个输入框当前的文字（如城市名、领袖名）
 
 选一项：
 
@@ -107,11 +109,13 @@
 
 `button` 填 `options` 的下标，`text` 填选项文字，两者都给时按 `text`。`act menu` 与 `act respond` 相同。
 
-列表行和按钮都不接受投递的鼠标消息。DLL 只返回屏幕坐标 `click`，由 `civ2ctl.py` 把游戏窗口切到前台，用真实鼠标点击。列表行双击，选中并确认。所以应答必须经过 `civ2ctl.py`，期间不要动鼠标。要点的位置被别的窗口挡住时返回 `window_covered`，不点击。列表行的控件还没画出来时，只能确认 `default` 那一行，其他行返回 `illegal`，稍后再发一次即可。
+`via` 为 `game` 的对话框，DLL 在游戏线程里调用对话框自己处理这次点击的函数，效果和玩家点击相同，不移动鼠标，游戏窗口也不用在前台。灰色的行返回 `illegal`。
+
+`via` 为 `mouse` 的对话框，控件不接受投递的鼠标消息。DLL 只返回屏幕坐标 `click`，由 `civ2ctl.py` 把游戏窗口切到前台，用真实鼠标点击。列表行双击，选中并确认。所以应答必须经过 `civ2ctl.py`，期间不要动鼠标。要点的位置被别的窗口挡住时返回 `window_covered`，不点击。列表行的控件还没画出来时，只能确认 `default` 那一行，其他行返回 `illegal`，稍后再发一次即可。
 
 `civ2ctl.py` 应答后最多等 2 秒，另外返回：
 
-- `via`：`keys` 或 `mouse`
+- `via`：`game`、`keys` 或 `mouse`
 - `changed`：对话框是否已关闭或换成了别的。`false` 表示没生效，可以重试
 - `dialog`：之后的对话框，没有则为 `null`
 
@@ -148,7 +152,7 @@ python civ2agent\cli\civ2ctl.py --record trace.jsonl replay session.jsonl
 
 - `get_state`：`civ2ctl.py snapshot`。需要全图时加 `--debug`
 - `skip_intro`：`civ2ctl.py skip-intro`。启动后先跳过开场动画，再开局或读档
-- `act`：`civ2ctl.py act ...`。返回 `modal_open` 时先读 `dialog.options`，再 `act respond --text ...`。应答会移动真实鼠标
+- `act`：`civ2ctl.py act ...`。返回 `modal_open` 时先读 `dialog.options`，再 `act respond --text ...`。只有 `via` 为 `mouse` 的对话框会移动真实鼠标
 - `menu`：`civ2ctl.py menu`。主菜单和开局设置都是对话框，用它看选项，再 `act respond`
 - `end_turn`：`civ2ctl.py end-turn`，然后 `events` 查看战斗和城池变化
 

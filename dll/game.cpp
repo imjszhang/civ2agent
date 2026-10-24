@@ -251,6 +251,59 @@ const char* SehString(int index) {
   }
 }
 
+// The game's own dialog answer handlers. They act on *kVaPopup and are meant
+// to run inside that dialog's message loop, where a click runs them too.
+using FnDlgId = void(__cdecl*)(int);
+using FnDlgRow = void(__cdecl*)(int, int);
+using FnDlgVoid = void(__cdecl*)();
+// thiscall (ecx = dialog; record, redraw) called as fastcall with a dummy edx.
+using FnDlgSelect = void(__fastcall*)(void*, int, const void*, int);
+
+template <typename Fn>
+Fn GameFn(std::uint32_t va) {
+  return reinterpret_cast<Fn>(g_base + (va - kImageBase));
+}
+
+int SehDlgButton(int id) {
+  __try {
+    GameFn<FnDlgId>(kVaDlgButton)(id);
+    return 0;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return 1;
+  }
+}
+
+int SehDlgChooseRow(int row) {
+  __try {
+    GameFn<FnDlgRow>(kVaDlgChooseRow)(0, row);
+    return 0;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return 1;
+  }
+}
+
+// What a double click on a row of the dialog's own list box does (0x5A53B8),
+// minus the mouse tracking.
+int SehDlgSelectRow(void* dlg, const void* record) {
+  __try {
+    GameFn<FnDlgSelect>(kVaDlgSelectRow)(dlg, 0, record, 1);
+    *reinterpret_cast<std::uint32_t*>(static_cast<char*>(dlg) + kDlgFlags) |= kDlgChoose;
+    GameFn<FnDlgVoid>(kVaDlgClose)();
+    return 0;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return 1;
+  }
+}
+
+int SehDlgSysListDone() {
+  __try {
+    GameFn<FnDlgVoid>(kVaDlgSysListDone)();
+    return 0;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return 1;
+  }
+}
+
 Game* G() { return At<Game>(kVaGame); }
 Unit* Units() { return At<Unit>(kVaUnits); }
 City* Cities() { return At<City>(kVaCities); }
@@ -308,6 +361,7 @@ std::string ReadGameText(const char* s, int cap) {
 }
 
 std::string DialogOptionsJson(void* dlg);
+std::string DialogEditsJson(void* dlg);
 
 // Every dialog report carries the same numbered options that act respond
 // picks from, so an index read from modal_open or an event is valid there.
@@ -327,7 +381,7 @@ std::string DialogJson() {
     ++lines;
   }
   return "{\"title\":" + JsonString(ReadGameText(title, 120)) + ",\"text\":" + JsonString(body) + "," +
-         DialogOptionsJson(dlg) + "}";
+         DialogOptionsJson(dlg) + DialogEditsJson(dlg) + "}";
 }
 
 void PushEvent(const std::string& json_object) { g_events.push_back(json_object); }
@@ -584,12 +638,21 @@ BOOL CALLBACK CollectMenuRows(HWND hwnd, LPARAM lp) {
   return TRUE;
 }
 
+// How act respond answers one option: through the game's own handler for that
+// control (read from the dialog object), or with a real click (Legacy).
+enum class Answer { Legacy, Button, Row, ListRow, SysListRow };
+
 struct MenuChoice {
   std::string text;
   HWND hwnd = nullptr;
   int list_index = -1;
   int list_id = -1;
   bool line = false;
+  Answer answer = Answer::Legacy;
+  int control_id = -1;            // Button: id passed to the button handler
+  int row = -1;                   // Row: index in the dialog's row chain
+  const char* record = nullptr;   // rows: the chain record
+  bool disabled = false;
 };
 
 struct ListLine {
@@ -730,6 +793,168 @@ std::vector<MenuChoice> BuildMenuChoices(void* dlg, bool* is_list) {
   return choices;
 }
 
+// Rows and buttons straight from the dialog object, in screen order, each
+// answered by the handler a click on it would run. Returns false for dialogs
+// that need more than one call to answer (checkboxes, two lists) or show
+// icon rows; those keep the click path.
+bool BuildNativeChoices(void* dlg, std::vector<MenuChoice>& out) {
+  auto* base = static_cast<char*>(dlg);
+  if (!Readable(base, 0x2F4)) return false;
+  auto flags = *reinterpret_cast<std::uint32_t*>(base + kDlgFlags);
+  int lines = *reinterpret_cast<int*>(base + kDlgNumLines);
+  int items = *reinterpret_cast<int*>(base + kDlgNumListItems);
+  int std_buttons = *reinterpret_cast<int*>(base + kDlgNumButtonsStd);
+  int custom_buttons = *reinterpret_cast<int*>(base + kDlgNumButtons);
+  if (flags & (kDlgCheckboxes | kDlgTwoLists)) return false;
+  if (lines == 0 && items > 1) return false;
+  if (lines < 0 || std_buttons < 0 || std_buttons > 3 || custom_buttons < 0 || custom_buttons > 6) return false;
+
+  std::vector<MenuChoice> rows;
+  if (lines > 0) {
+    Answer kind = !(flags & kDlgListbox)        ? Answer::Row
+                  : (flags & kDlgSystemListbox) ? Answer::SysListRow
+                                                : Answer::ListRow;
+    // Radio rows stop at 40; the dialog's own list shows the rows of its page.
+    int limit = kind == Answer::Row ? (std::min)(lines, kDlgMaxRows) : 512;
+    int page = *reinterpret_cast<int*>(base + kDlgListPage);
+    const char* rec = *reinterpret_cast<const char**>(base + kDlgListHead);
+    for (int chain = 0; rec && chain < limit && Readable(rec, kListNext + sizeof(char*)); ++chain) {
+      if (kind == Answer::Row || *reinterpret_cast<const int*>(rec + kListPage) == page) {
+        MenuChoice choice;
+        choice.text = ReadGameText(*reinterpret_cast<const char* const*>(rec + kListText), 120);
+        choice.list_id = *reinterpret_cast<const int*>(rec + kListId);
+        choice.answer = kind;
+        choice.row = chain;
+        choice.record = rec;
+        // Only radio rows are disabled controls; the list box ignores the bit.
+        choice.disabled = kind == Answer::Row && (*reinterpret_cast<const std::uint32_t*>(rec + kListFlags) & kListDisabled);
+        if (!choice.text.empty()) rows.push_back(choice);
+      }
+      rec = *reinterpret_cast<const char* const*>(rec + kListNext);
+    }
+  }
+
+  // Standard buttons (OK, Help, Cancel) come first, then the captioned ones;
+  // control ids follow that order, the screen shows them by left edge.
+  auto** captions = At<const char*>(kVaPopupCaptions);
+  auto** texts = reinterpret_cast<const char**>(base + kDlgButtonTexts);
+  std::vector<std::pair<int, MenuChoice>> placed;
+  for (int i = 0; i < std_buttons + custom_buttons; ++i) {
+    const int* layout = reinterpret_cast<const int*>(base + kDlgButtonLayout + i * 8);
+    const char* caption = nullptr;
+    if (i < std_buttons) {
+      int type = layout[0];
+      if (type >= 0 && type <= 2 && Readable(captions + type, sizeof(char*))) caption = captions[type];
+    } else {
+      caption = texts[i - std_buttons];
+    }
+    MenuChoice choice;
+    choice.text = ReadGameText(caption, 80);
+    choice.answer = Answer::Button;
+    choice.control_id = kButtonIdBase + i;
+    if (!choice.text.empty()) placed.push_back({layout[1], choice});
+  }
+  std::stable_sort(placed.begin(), placed.end(),
+                   [](const auto& a, const auto& b) { return a.first < b.first; });
+  out = rows;
+  for (const auto& p : placed) out.push_back(p.second);
+  return true;
+}
+
+struct DialogChoices {
+  std::vector<MenuChoice> choices;
+  bool native = false;
+  bool is_list = false;
+  int default_index = -1;  // option highlighted in the dialog, lists only
+};
+
+// The options that act respond picks from, so an index read from a report
+// is valid when answering the same dialog.
+DialogChoices ChoicesFor(void* dlg) {
+  DialogChoices out;
+  if (BuildNativeChoices(dlg, out.choices)) {
+    out.native = true;
+    const char* current = *reinterpret_cast<const char**>(static_cast<char*>(dlg) + kDlgListSelected);
+    for (size_t i = 0; i < out.choices.size(); ++i) {
+      if (out.choices[i].answer == Answer::Button) continue;
+      out.is_list = true;
+      if (out.choices[i].record == current) out.default_index = static_cast<int>(i);
+    }
+    return out;
+  }
+  out.choices = BuildMenuChoices(dlg, &out.is_list);
+  if (out.is_list) ReadDialogList(dlg, &out.default_index);
+  return out;
+}
+
+// The list box control of the dialog's current page, for system list boxes.
+HWND SysListWindow(void* dlg) {
+  auto* base = static_cast<char*>(dlg);
+  int page = *reinterpret_cast<int*>(base + kDlgListPage);
+  if (page < 0 || page > 1) return nullptr;
+  const char* control = *reinterpret_cast<const char* const*>(base + kDlgSysListControls + page * 4);
+  if (!Readable(control, kControlHwnd + sizeof(HWND))) return nullptr;
+  HWND hwnd = *reinterpret_cast<const HWND*>(control + kControlHwnd);
+  return IsWindow(hwnd) ? hwnd : nullptr;
+}
+
+// Runs on the game thread inside the dialog's own loop, so the handler does
+// what a click would and the game closes the dialog itself.
+std::string AnswerNative(void* dlg, const MenuChoice& choice, const std::string& head) {
+  auto* base = static_cast<char*>(dlg);
+  auto flags = *reinterpret_cast<std::uint32_t*>(base + kDlgFlags);
+  if ((flags & (kDlgCreated | kDlgCreatedParts)) != (kDlgCreated | kDlgCreatedParts) ||
+      !Readable(*reinterpret_cast<void**>(base), 0xD8))
+    return ErrJson("no_dialog", "对话框还没画出来，稍后再试");
+  if (flags & kDlgClosing) return ErrJson("no_dialog", "对话框正在关闭");
+  if (choice.disabled) return ErrJson("illegal", "这一行不可选");
+  int fault = 0;
+  switch (choice.answer) {
+    case Answer::Button:
+      fault = SehDlgButton(choice.control_id);
+      break;
+    case Answer::Row:
+      fault = SehDlgChooseRow(choice.row);
+      break;
+    case Answer::ListRow:
+      fault = SehDlgSelectRow(dlg, choice.record);
+      break;
+    case Answer::SysListRow: {
+      HWND list = SysListWindow(dlg);
+      if (!list) return ErrJson("no_dialog", "找不到列表控件");
+      const char* text = *reinterpret_cast<const char* const*>(choice.record + kListText);
+      LRESULT at = SendMessageA(list, LB_FINDSTRINGEXACT, static_cast<WPARAM>(-1), reinterpret_cast<LPARAM>(text));
+      if (at == LB_ERR) return ErrJson("illegal", "列表里没有这一行");
+      SendMessageA(list, LB_SETCURSEL, static_cast<WPARAM>(at), 0);
+      fault = SehDlgSysListDone();
+      break;
+    }
+    default:
+      return ErrJson("illegal", "这个选项不能直接应答");
+  }
+  if (fault) return ErrJson("game_fault", "对话框处理函数异常");
+  return OkJson(head + ",\"via\":\"game\"");
+}
+
+// Current text of the dialog's edit boxes (city name, leader name).
+std::string DialogEditsJson(void* dlg) {
+  auto* base = static_cast<char*>(dlg);
+  int edits = *reinterpret_cast<int*>(base + kDlgNumEdits);
+  auto flags = *reinterpret_cast<std::uint32_t*>(base + kDlgFlags);
+  if (edits <= 0 || edits > 8 || !(flags & kDlgCreatedParts)) return {};
+  const char* controls = *reinterpret_cast<const char* const*>(base + kDlgEditControls);
+  if (!Readable(controls, edits * kEditControlStride)) return {};
+  std::string out = ",\"edits\":[";
+  for (int i = 0; i < edits; ++i) {
+    HWND hwnd = *reinterpret_cast<const HWND*>(controls + i * kEditControlStride + kControlHwnd);
+    char buf[256] = {};
+    if (IsWindow(hwnd)) GetWindowTextA(hwnd, buf, sizeof(buf));
+    if (i) out += ',';
+    out += "{\"index\":" + std::to_string(i) + ",\"text\":" + JsonString(ReadGameText(buf, sizeof(buf) - 1)) + "}";
+  }
+  return out + "]";
+}
+
 HWND DialogWindow(void* dlg) {
   const char* title_a = *reinterpret_cast<const char**>(static_cast<char*>(dlg) + kDlgTitle);
   if (!title_a || !Readable(title_a, 1)) return nullptr;
@@ -748,21 +973,19 @@ void PostKey(HWND hwnd, UINT vk) {
 }
 
 std::string DialogOptionsJson(void* dlg) {
-  bool is_list = false;
-  std::vector<MenuChoice> choices = BuildMenuChoices(dlg, &is_list);
-  std::string out = std::string("\"kind\":") + JsonString(is_list ? "list" : "controls");
-  if (is_list) {
-    // The row highlighted when the list opened; the dialog does not update it
-    // as the highlight moves.
-    int start = -1;
-    ReadDialogList(dlg, &start);
-    out += ",\"default\":" + std::to_string(start);
-  }
+  DialogChoices dc = ChoicesFor(dlg);
+  std::string out = std::string("\"kind\":") + JsonString(dc.is_list ? "list" : "controls");
+  // The row highlighted when the dialog opened.
+  if (dc.is_list) out += ",\"default\":" + std::to_string(dc.default_index);
+  // game: respond calls the dialog's own handler; mouse: it clicks.
+  out += std::string(",\"via\":") + JsonString(dc.native ? "game" : "mouse");
   out += ",\"options\":[";
-  for (size_t i = 0; i < choices.size(); ++i) {
+  for (size_t i = 0; i < dc.choices.size(); ++i) {
+    const MenuChoice& c = dc.choices[i];
     if (i) out += ',';
-    out += std::string("{\"index\":") + std::to_string(i) + ",\"text\":" + JsonString(choices[i].text);
-    if (choices[i].list_id >= 0) out += ",\"id\":" + std::to_string(choices[i].list_id);
+    out += std::string("{\"index\":") + std::to_string(i) + ",\"text\":" + JsonString(c.text);
+    if (c.record || c.list_id >= 0) out += ",\"id\":" + std::to_string(c.list_id);
+    if (c.disabled) out += ",\"disabled\":true";
     out += "}";
   }
   out += "]";
@@ -774,13 +997,15 @@ std::string MenuJsonObject() {
   return OkJson(std::string("\"in_game\":") + (MatchLive() ? "true" : "false") + ",\"menu\":" + DialogJson());
 }
 
-// Rows and buttons are real controls that ignore posted mouse messages; for
-// those the caller gets screen coordinates and clicks with the real cursor.
-// Rows take a double click, which selects and confirms.
+// Most dialogs are answered through the game's own handler for the chosen
+// control. The rest (checkboxes, icon rows) have real controls that ignore
+// posted mouse messages; for those the caller gets screen coordinates and
+// clicks with the real cursor. Rows take a double click, which selects and
+// confirms.
 std::string ClickMenuOption(int index, const std::string& text) {
   void* dlg = DialogPtr();
   if (!dlg) return ErrJson("no_dialog", "没有打开的界面");
-  std::vector<MenuChoice> choices = BuildMenuChoices(dlg, nullptr);
+  std::vector<MenuChoice> choices = ChoicesFor(dlg).choices;
   if (!text.empty()) {
     index = -1;
     for (size_t i = 0; i < choices.size(); ++i) {
@@ -794,6 +1019,7 @@ std::string ClickMenuOption(int index, const std::string& text) {
   if (index < 0 || index >= static_cast<int>(choices.size())) return ErrJson("illegal", "选项下标超出范围");
   const MenuChoice& choice = choices[index];
   std::string head = std::string("\"index\":") + std::to_string(index) + ",\"text\":" + JsonString(choice.text);
+  if (choice.answer != Answer::Legacy) return AnswerNative(dlg, choice, head);
   if (choice.list_index >= 0 && !choice.hwnd) {
     // Without row controls (not drawn yet, or a scrolling list) only the row
     // highlighted at open can be confirmed: Enter takes the live highlight,
@@ -899,8 +1125,7 @@ BOOL CALLBACK KickWindow(HWND hwnd, LPARAM flags) {
 bool MenuHasStartGame() {
   void* dlg = DialogPtr();
   if (!dlg) return false;
-  std::vector<MenuChoice> choices = BuildMenuChoices(dlg, nullptr);
-  for (const auto& choice : choices) {
+  for (const auto& choice : ChoicesFor(dlg).choices) {
     if (choice.text == "开始新游戏") return true;
   }
   return false;

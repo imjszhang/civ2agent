@@ -104,9 +104,9 @@ def is_choice(request):
 
 
 def choose(request, timeout_s=30, settle_s=2.0):
-    """Answer the dialog on screen and report what replaced it. The DLL picks
-    list rows itself; for buttons and option rows it returns screen
-    coordinates, because the game ignores posted mouse input."""
+    """Answer the dialog on screen and report what replaced it. The DLL answers
+    most dialogs through the game's own handlers; for the rest it returns
+    screen coordinates, because those controls ignore posted mouse input."""
     before = dialog_key(current_dialog())
     response = transact(request, timeout_s=timeout_s)
     click = response.pop("click", None)

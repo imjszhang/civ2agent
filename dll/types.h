@@ -18,17 +18,34 @@ constexpr std::uint32_t kVaHumanCiv = 0x006D1DA0;
 constexpr std::uint32_t kVaUnitSelected = 0x006D1DA8;
 constexpr std::uint32_t kVaUnitTypes = 0x0064B1B8;
 constexpr std::uint32_t kVaRules = 0x00627680;
-constexpr std::uint32_t kVaPopup = 0x006CEC84;
+constexpr std::uint32_t kVaPopup = 0x006CEC84;       // top of the popup stack
+constexpr std::uint32_t kVaPopupStack = 0x00635A58;  // popups at [1..count] (control builder 0x5A211C)
+constexpr std::uint32_t kVaPopupCount = 0x00635A9C;
 constexpr std::uint32_t kVaPfdx = 0x00628350;
 constexpr std::uint32_t kVaPfdy = 0x00628360;
-constexpr std::uint32_t kVaAfterActive = 0x004016EF;
 constexpr std::uint32_t kVaUnitCanMove = 0x0040273E;
 constexpr std::uint32_t kVaMapGetSquare = 0x00401BB3;
-constexpr std::uint32_t kVaMapVisible = 0x00403C24;
-constexpr std::uint32_t kVaCalcCity = 0x00402603;
-constexpr std::uint32_t kVaCivHasTech = 0x00402E7D;
 constexpr std::uint32_t kVaGetString = 0x00403387;
 constexpr std::uint32_t kVaTurnToYear = 0x00403418;
+constexpr std::uint32_t kVaMapGetCivData = 0x00403823;   // cdecl (x, y, civ) -> known features byte
+constexpr std::uint32_t kVaGetAdvanceCost = 0x004030E9;  // cdecl (civ) -> beakers for the next advance
+// cdecl (unit) -> movement left this turn, the game's own number (UnitCanMove
+// uses it). Unit::move_points is movement already spent.
+constexpr std::uint32_t kVaUnitMovesLeft = 0x005B2C3D;
+constexpr std::uint32_t kVaCosmic = 0x0064BCC8;  // byte 0: road movement multiplier
+
+constexpr std::uint16_t kUnitVeteran = 0x2000;
+constexpr std::uint16_t kUnitAutomated = 0x8000;
+constexpr std::uint16_t kFeatureDamage = 0x10;  // Game::custom_features: HP bars and damaged movement
+constexpr std::uint8_t kFeatureUnit = 0x01;
+constexpr std::uint8_t kFeatureCity = 0x02;
+constexpr std::uint8_t kFeatureAirbase = 0x42;
+constexpr std::int32_t kTreatyContact = 0x01;
+constexpr std::int32_t kTreatyCeaseFire = 0x02;
+constexpr std::int32_t kTreatyPeace = 0x04;
+constexpr std::int32_t kTreatyAlliance = 0x08;
+constexpr std::int32_t kTreatyEmbassy = 0x80;
+constexpr std::int32_t kTreatyWar = 0x2000;
 constexpr int kUnitSlots = 2048;
 constexpr int kCitySlots = 256;
 constexpr int kCivSlots = 8;
@@ -261,8 +278,10 @@ constexpr int kListPage = 0x0C;
 constexpr int kListNext = 0x10;
 constexpr int kEditControlStride = 0x48;
 constexpr int kControlHwnd = 0x1C;
+constexpr int kEditFilter = 0x34;  // optional cdecl (control +4, char) -> accept
 
 constexpr std::uint32_t kDlgCheckboxes = 0x4;
+constexpr std::uint32_t kDlgNoWait = 0x8;  // runs no loop of its own: advice that stays up without holding the game
 constexpr std::uint32_t kDlgCreated = 0x20;
 constexpr std::uint32_t kDlgCreatedParts = 0x200;
 constexpr std::uint32_t kDlgClosing = 0x400;
@@ -281,3 +300,47 @@ constexpr std::uint32_t kVaDlgSelectRow = 0x005A17E9;   // thiscall (dlg; record
 constexpr std::uint32_t kVaDlgClose = 0x005A3C58;       // cdecl ()
 constexpr std::uint32_t kVaDlgSysListDone = 0x005A3C83; // cdecl ()
 constexpr std::uint32_t kVaPopupCaptions = 0x00635A48;  // OK, Help, Cancel
+constexpr int kStdButtonOk = 0;      // standard button types at kDlgButtonLayout
+constexpr int kStdButtonCancel = 2;
+
+// City window (TCityWindow at 0x6A91B8). Static analysis of 0x509590,
+// 0x50A473 and 0x50BC4F. Open means Hidden == 0 and CityIndex != -1.
+constexpr std::uint32_t kVaCityWindow = 0x006A91B8;
+constexpr int kCityWinCityIndex = 0x159C;
+constexpr int kCityWinHidden = 0x15A4;
+constexpr int kCityWinModalMode = 0x15AC;
+// Non-zero while the game shows the city window modally (after founding or
+// taking a city, from a turn report) and waits for it to close.
+constexpr std::uint32_t kVaLockCityWindow = 0x0062EDF8;
+constexpr std::uint32_t kVaCityWindowShow = 0x00402E78;  // thiscall (window; city), returns at once when unlocked
+constexpr std::uint32_t kVaCityChange = 0x004021D5;      // cdecl (unused): the Change button, runs @PRODUCTION
+constexpr std::uint32_t kVaCityWindowExit = 0x004034E5;  // cdecl (): the Exit button
+constexpr std::uint32_t kVaImprovements = 0x0064C488;    // 67 x 8 bytes, string index at +0
+
+// A left click on one of the player's units (map click handler 0x410F77):
+// leave moving mode, put the cursor on the tile, activate the top unit there
+// (a stack opens the units-list popup), centre the map on the tile.
+constexpr std::uint32_t kVaLeaveMovingMode = 0x004897FA;  // cdecl (0)
+constexpr std::uint32_t kVaSetCursor = 0x00410D98;        // cdecl (x, y)
+constexpr std::uint32_t kVaActivateAtCursor = 0x0058D442; // cdecl (): clears orders, AfterActiveUnitChanged
+constexpr std::uint32_t kVaCenterView = 0x00403404;       // thiscall (map window; x, y)
+constexpr std::uint32_t kVaMapWindow = 0x0066C7A8;
+
+// Tax rate window (TTaxWindow, on ShowTaxRate's stack while open). Static
+// analysis of 0x40CD64, 0x40BDAC and 0x5CD149.
+constexpr std::uint32_t kVaTaxWindowOpen = 0x0063CBB0;  // int, non-zero while open
+constexpr std::uint32_t kVaTaxWindowPtr = 0x0063CBB4;   // TTaxWindow*, stale after close
+constexpr int kTaxWinCiv = 0x2D8;
+constexpr int kTaxWinMaxRate = 0x2DC;
+constexpr int kTaxWinTax = 0x2E0;      // live values, tenths
+constexpr int kTaxWinLux = 0x2E4;
+constexpr int kTaxWinScience = 0x2E8;
+constexpr int kTaxWinTaxBar = 0x374;   // scroll bar HWNDs (MSScrollBarClass, range 0..10)
+constexpr int kTaxWinLuxBar = 0x3B4;
+constexpr int kTaxWinScienceBar = 0x3F4;
+constexpr std::uint32_t kVaTaxWindowOk = 0x0040C3A5;  // cdecl (): the OK button; Enter and Esc do the same
+constexpr std::uint32_t kVaMenuExec = 0x0040385A;     // cdecl (menu, command), what a menu click runs
+constexpr int kMenuKingdom = 2;
+constexpr int kMenuTaxRate = 0x201;
+// @PRODUCTION record ids: unit type, 0x3E + improvement, 0x65 + wonder (= 0x3E + 39 + wonder).
+constexpr int kProductionImprovementBase = 0x3E;

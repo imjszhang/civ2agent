@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pick non-default rows with act respond, then back out to the main menu.
+"""Pick non-default rows with respond, then back out to the main menu.
 
 Requires civ2agent injected and the main menu on screen. These dialogs are
 answered through the game's own handlers (via=game), so the mouse is not used.
@@ -46,7 +46,7 @@ def edits(dialog):
 
 
 def respond(text):
-    r = run("act", "respond", "--text", text)
+    r = run("respond", "--text", text)
     dialog = r.get("dialog") or {}
     print(f"respond {text!r}: ok={r.get('ok')} via={r.get('via')} changed={r.get('changed')} -> {dialog.get('title')!r}")
     if not r.get("ok") or not r.get("changed"):
@@ -61,10 +61,10 @@ def skip(reason):
 
 def main():
     try:
-        menu = run("menu")
+        menu = run("dialog")
     except SystemExit as exc:
         return skip(exc)
-    if not menu.get("ok") or MAIN_MENU not in options(menu.get("menu")):
+    if not menu.get("ok") or MAIN_MENU not in options(menu.get("dialog")):
         return skip("main menu not showing")
     dialog = respond(MAIN_MENU)
     for _ in range(8):

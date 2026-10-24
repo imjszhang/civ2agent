@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Pick non-default rows with act respond, then back out to the main menu.
+"""Pick non-default rows with respond, then back out to the main menu.
 
-Requires civ2agent injected and the main menu on screen. Moves the real mouse.
+Requires civ2agent injected and the main menu on screen. These dialogs are
+answered through the game's own handlers (via=game), so the mouse is not used.
 Choosing 女性 and then 埃及人 (a later column of the tribe list) must offer the
-name 克利奥帕特拉; any other name means a row other than the requested one was
-confirmed. Never starts a game, so no save is written.
+name 克利奥帕特拉 in the name box; any other name means a row other than the
+requested one was confirmed. Never starts a game, so no save is written.
 Exits 0 with a skip message when the main menu is not showing. Set
 CIV2_AGENT_REQUIRE_GAME=1 to make that a failure.
 """
@@ -40,8 +41,12 @@ def options(dialog):
     return [o["text"] for o in (dialog or {}).get("options") or []]
 
 
+def edits(dialog):
+    return [e["text"] for e in (dialog or {}).get("edits") or []]
+
+
 def respond(text):
-    r = run("act", "respond", "--text", text)
+    r = run("respond", "--text", text)
     dialog = r.get("dialog") or {}
     print(f"respond {text!r}: ok={r.get('ok')} via={r.get('via')} changed={r.get('changed')} -> {dialog.get('title')!r}")
     if not r.get("ok") or not r.get("changed"):
@@ -56,10 +61,10 @@ def skip(reason):
 
 def main():
     try:
-        menu = run("menu")
+        menu = run("dialog")
     except SystemExit as exc:
         return skip(exc)
-    if not menu.get("ok") or MAIN_MENU not in options(menu.get("menu")):
+    if not menu.get("ok") or MAIN_MENU not in options(menu.get("dialog")):
         return skip("main menu not showing")
     dialog = respond(MAIN_MENU)
     for _ in range(8):
@@ -71,7 +76,7 @@ def main():
         return 1
     respond("女性")
     dialog = respond("埃及人")
-    name = options(dialog)
+    name = edits(dialog)
     print("name offered:", name[:1])
     passed = name[:1] == ["克利奥帕特拉"]
     for _ in range(12):

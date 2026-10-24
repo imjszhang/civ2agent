@@ -36,18 +36,18 @@ def neighbor_dirs():
 
 def main():
     try:
-        hello = run("hello")
+        hello = run("status")
     except SystemExit as exc:
         print("skip:", exc)
         return 1 if os.environ.get("CIV2_AGENT_REQUIRE_GAME") == "1" else 0
     if not hello.get("in_game"):
         print("skip: not in a game")
         return 1 if os.environ.get("CIV2_AGENT_REQUIRE_GAME") == "1" else 0
-    state = run("snapshot", timeout=60)
+    state = run("state", timeout=60)
     if not state.get("ok"):
         print(json.dumps(state, ensure_ascii=False))
         return 1
-    settler = next((u for u in state["units"] if u.get("civ") == state["human"] and u.get("role") == 5), None)
+    settler = next((u for u in state["units"] if u.get("role") == 5), None)
     if not settler:
         print("skip: no human settler")
         return 1 if os.environ.get("CIV2_AGENT_REQUIRE_GAME") == "1" else 0
@@ -68,7 +68,7 @@ def main():
     if target is None:
         print("skip: no dry land next to the settler")
         return 0
-    ordered = run("act", "order", "--unit", str(settler["index"]), "--order", "irrigate")
+    ordered = run("order", "--unit", str(settler["index"]), "--order", "irrigate")
     print("order", json.dumps(ordered, ensure_ascii=False))
     if not ordered.get("ok"):
         return 1
@@ -80,7 +80,7 @@ def main():
         print("end", json.dumps({k: ended.get(k) for k in ("ok", "error", "turn", "year")}, ensure_ascii=False))
         if not ended.get("ok"):
             return 1
-        state = run("snapshot", timeout=60)
+        state = run("state", timeout=60)
         tile = next((t for t in state.get("tiles", []) if t["x"] == target[0] and t["y"] == target[1]), None)
         if tile and tile["f"] & IRRIGATION:
             print("irrigated", target, "after", turn + 1, "turns")

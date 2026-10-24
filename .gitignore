@@ -5,3 +5,8 @@ tests/*.exe
 tests/*.obj
 tests/*.ilk
 tests/*.pdb
+# Agent-owned games: saves, logs and notes of each game (civ2session.py)
+games/
+runner/node_modules/
+# Harness targets: local executable paths and auth choices (copy targets.example.json)
+runner/targets.json

@@ -270,7 +270,7 @@ def main():
         print("skip: the game is not running")
         return 0
     ready = cli("wait-ready")
-    if not check("protocol 2", bool(ready.get("ok") and ready.get("protocol") == 2), dump(ready)):
+    if not check("protocol 3", bool(ready.get("ok") and ready.get("protocol") == 3), dump(ready)):
         return 1
     if not start_game():
         return 1

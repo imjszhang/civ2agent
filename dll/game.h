@@ -1,8 +1,9 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
-constexpr int kProtocolVersion = 2;
+constexpr int kProtocolVersion = 3;
 
 // One act request. Strings are UTF-8 from the pipe; -1 means not given.
 struct ActArgs {
@@ -13,8 +14,11 @@ struct ActArgs {
   int y = 0;
   int option = -1;  // respond: index into dialog.options
   std::string text;  // respond: option text
-  std::string edit;  // respond: text to put in the edit box first
+  std::vector<std::string> edits;  // respond: text for the edit boxes, in order, typed first
   bool has_edit = false;
+  std::string file;  // respond: file name for a Windows file dialog
+  bool has_file = false;
+  bool windows = false;  // respond: the caller is answering a Windows dialog (sysdlg.h)
   std::string order;
   std::string item;  // produce: option text
   int item_id = -1;  // produce: option id
@@ -66,3 +70,12 @@ void GameWakeUi(bool press_escape);
 // Called on the game thread when a dialog appears under the active command.
 bool GameTakeModalAbort(std::string& response_json);
 void GameObserveDialog();
+
+// While a Windows dialog (sysdlg.h) holds the game thread, the pipe thread
+// answers status and dialog from what the game thread last saw. Pump keeps
+// that copy fresh; nothing here reads game memory.
+void GameCacheGate();
+std::string GameHelloDuringSysDialog();
+std::string GameDialogDuringSysDialog(const std::string& sys_dialog_json);
+// version_mismatch or unsupported_limits, fixed at init.
+bool GameBlockedCached(std::string& err);

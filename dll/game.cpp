@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -407,6 +408,17 @@ std::string TechName(int tech) {
   if (!Readable(rule, sizeof(RulesCivilize))) return {};
   return ReadGameText(SehString(rule->text_index), 80);
 }
+
+const char* SehCivText(std::uint32_t va, int civ) {
+  __try {
+    return GameFn<const char*(__cdecl*)(int)>(va)(civ);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return nullptr;
+  }
+}
+
+// A name the game shows for the civ: its name, its leader's, the title.
+std::string CivText(std::uint32_t va, int civ) { return ReadGameText(SehCivText(va, civ), 60); }
 
 void RefreshShadow() {
   if (!MatchLive()) {
@@ -1095,33 +1107,45 @@ bool EditAccepts(const char* control, const std::string& text) {
   return true;
 }
 
-// Types into the dialog's edit box, as a player would before pressing OK.
-// The box keeps its own length limit; a mismatch on read-back is refused.
-std::string SetDialogEdit(void* dlg, const std::string& utf8) {
+// Types into the dialog's edit boxes, in order, as a player would before
+// pressing OK. Every text is checked first, so a refusal leaves all boxes as
+// they were. Each box keeps its own length limit; a mismatch on read-back is
+// refused.
+std::string SetDialogEdits(void* dlg, const std::vector<std::string>& utf8) {
   auto* base = static_cast<char*>(dlg);
   int edits = *reinterpret_cast<int*>(base + kDlgNumEdits);
   auto flags = *reinterpret_cast<std::uint32_t*>(base + kDlgFlags);
   if (edits <= 0 || edits > 8 || !(flags & kDlgCreatedParts)) return ErrJson("illegal", "这个对话框没有输入框");
+  if (utf8.empty() || static_cast<int>(utf8.size()) > edits)
+    return ErrJson("illegal", "这个对话框只有 " + std::to_string(edits) + " 个输入框");
   const char* controls = *reinterpret_cast<const char* const*>(base + kDlgEditControls);
-  if (!Readable(controls, kEditControlStride)) return ErrJson("no_dialog", "输入框还没画出来，稍后再试");
-  HWND hwnd = *reinterpret_cast<const HWND*>(controls + kControlHwnd);
-  if (!IsWindow(hwnd)) return ErrJson("no_dialog", "输入框还没画出来，稍后再试");
-  std::string text;
-  if (!ToGameText(utf8, text)) return ErrJson("illegal", "输入的文字里有游戏不支持的字符");
-  // Typing stops at the box's limit (15 bytes for a city name), but
-  // WM_SETTEXT does not, and the game copies the text unbounded into its
-  // own buffer. Hold it to what a player could type.
-  auto limit = static_cast<size_t>(SendMessageA(hwnd, EM_GETLIMITTEXT, 0, 0));
-  if (text.size() > limit)
-    return ErrJson("illegal", "输入框最多 " + std::to_string(limit) + " 字节（一个汉字 2 字节）");
-  for (unsigned char c : text) {
-    if (c < 0x20) return ErrJson("illegal", "输入框不接受控制字符");
+  if (!Readable(controls, static_cast<int>(utf8.size()) * kEditControlStride))
+    return ErrJson("no_dialog", "输入框还没画出来，稍后再试");
+  std::vector<std::pair<HWND, std::string>> typed;
+  for (size_t i = 0; i < utf8.size(); ++i) {
+    const char* control = controls + i * kEditControlStride;
+    HWND hwnd = *reinterpret_cast<const HWND*>(control + kControlHwnd);
+    if (!IsWindow(hwnd)) return ErrJson("no_dialog", "输入框还没画出来，稍后再试");
+    std::string text;
+    if (!ToGameText(utf8[i], text)) return ErrJson("illegal", "输入的文字里有游戏不支持的字符");
+    // Typing stops at the box's limit (15 bytes for a city name), but
+    // WM_SETTEXT does not, and the game copies the text unbounded into its
+    // own buffer. Hold it to what a player could type.
+    auto limit = static_cast<size_t>(SendMessageA(hwnd, EM_GETLIMITTEXT, 0, 0));
+    if (text.size() > limit)
+      return ErrJson("illegal", "输入框最多 " + std::to_string(limit) + " 字节（一个汉字 2 字节）");
+    for (unsigned char c : text) {
+      if (c < 0x20) return ErrJson("illegal", "输入框不接受控制字符");
+    }
+    if (!EditAccepts(control, text)) return ErrJson("illegal", "输入框不接受其中的字符");
+    typed.push_back({hwnd, text});
   }
-  if (!EditAccepts(controls, text)) return ErrJson("illegal", "输入框不接受其中的字符");
-  SendMessageA(hwnd, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(text.c_str()));
-  char back[256] = {};
-  GetWindowTextA(hwnd, back, sizeof(back));
-  if (text != back) return ErrJson("illegal", "输入框放不下这段文字");
+  for (const auto& [hwnd, text] : typed) {
+    SendMessageA(hwnd, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(text.c_str()));
+    char back[256] = {};
+    GetWindowTextA(hwnd, back, sizeof(back));
+    if (text != back) return ErrJson("illegal", "输入框放不下这段文字");
+  }
   return {};
 }
 
@@ -1130,7 +1154,7 @@ std::string SetDialogEdit(void* dlg, const std::string& utf8) {
 // posted mouse messages; for those the caller gets screen coordinates and
 // clicks with the real cursor. Rows take a double click, which selects and
 // confirms.
-std::string ClickMenuOption(int index, const std::string& text, const std::string* edit) {
+std::string ClickMenuOption(int index, const std::string& text, const std::vector<std::string>* edits) {
   void* dlg = DialogPtr();
   if (!dlg) return ErrJson("no_dialog", "没有打开的界面");
   std::vector<MenuChoice> choices = ChoicesFor(dlg).choices;
@@ -1147,9 +1171,9 @@ std::string ClickMenuOption(int index, const std::string& text, const std::strin
   if (index < 0 || index >= static_cast<int>(choices.size())) return ErrJson("illegal", "选项下标超出范围");
   const MenuChoice& choice = choices[index];
   std::string head = std::string("\"index\":") + std::to_string(index) + ",\"text\":" + JsonString(choice.text);
-  if (edit) {
+  if (edits) {
     if (choice.disabled) return ErrJson("illegal", "这一行不可选");
-    std::string refused = SetDialogEdit(dlg, *edit);
+    std::string refused = SetDialogEdits(dlg, *edits);
     if (!refused.empty()) return refused;
   }
   if (choice.answer != Answer::Legacy) return AnswerNative(dlg, choice, head);
@@ -2124,7 +2148,7 @@ bool GameTakeModalAbort(std::string& response_json) {
   if (!dialog && !tax && !GameCityWindowModal()) return false;
   std::string turn;
   if (MatchLive()) {
-    turn = std::string("\"turn\":") + std::to_string(G()->turn) + ",\"year\":" + std::to_string(G()->year) + ",";
+    turn = std::string("\"turn\":") + std::to_string(G()->turn) + ",\"year\":" + std::to_string(GameYear()) + ",";
     if (g_turn_inflight) {
       bool ended = G()->turn != g_inflight_turn || G()->year != g_inflight_year;
       turn += std::string("\"turn_ended\":") + (ended ? "true" : "false") + ",";
@@ -2140,17 +2164,23 @@ bool GameTakeModalAbort(std::string& response_json) {
   return true;
 }
 
-std::string GameHelloJson() {
-  Gate g = GameGate();
+namespace {
+
+// What the game thread last saw, for the pipe thread while a Windows dialog
+// holds the game thread.
+std::mutex g_gate_mu;
+Gate g_gate_cache;
+bool g_gate_cached = false;
+
+std::string HelloJson(const Gate& g, bool dialog_open, const std::string& city, const std::string& tax) {
   std::string body = std::string("\"protocol\":") + std::to_string(kProtocolVersion) +
                      ",\"exe_hash\":" + JsonString(g.exe_hash) +
                      ",\"uia_loaded\":" + (g.uia_loaded ? "true" : "false") +
                      ",\"in_game\":" + (g.in_game ? "true" : "false") +
                      ",\"limits_ok\":" + (g.limits_ok ? "true" : "false") +
                      ",\"multi_type\":" + std::to_string(g.multi_type) +
-                     ",\"dialog_open\":" + (g.hash_ok && DialogPtr() ? "true" : "false") +
-                     ",\"city_window\":" + (g.in_game ? CityWindowJson() : std::string("null")) +
-                     ",\"tax_window\":" + (g.in_game ? TaxWindowJson() : std::string("null"));
+                     ",\"dialog_open\":" + (dialog_open ? "true" : "false") + ",\"city_window\":" + city +
+                     ",\"tax_window\":" + tax;
   if (!g.block_error.empty()) {
     return std::string("{\"ok\":false,\"error\":") + JsonString(g.block_error) + "," + body +
            ",\"reason\":" +
@@ -2160,6 +2190,47 @@ std::string GameHelloJson() {
   }
   return OkJson(body);
 }
+
+Gate CachedGate() {
+  std::lock_guard<std::mutex> lock(g_gate_mu);
+  if (g_gate_cached) return g_gate_cache;
+  Gate g;  // set once at init, before the pipe thread starts
+  g.hash_ok = g_hash_ok;
+  g.limits_ok = g_limits_ok;
+  g.exe_hash = g_hash;
+  g.block_error = g_block;
+  return g;
+}
+
+}  // namespace
+
+std::string GameHelloJson() {
+  Gate g = GameGate();
+  return HelloJson(g, g.hash_ok && DialogPtr(), g.in_game ? CityWindowJson() : std::string("null"),
+                   g.in_game ? TaxWindowJson() : std::string("null"));
+}
+
+void GameCacheGate() {
+  static DWORD last = 0;
+  DWORD now = GetTickCount();
+  if (g_gate_cached && now - last < 250) return;
+  last = now;
+  Gate g = GameGate();
+  std::lock_guard<std::mutex> lock(g_gate_mu);
+  g_gate_cache = g;
+  g_gate_cached = true;
+}
+
+std::string GameHelloDuringSysDialog() { return HelloJson(CachedGate(), true, "null", "null"); }
+
+std::string GameDialogDuringSysDialog(const std::string& sys_dialog_json) {
+  Gate g = CachedGate();
+  return OkJson(std::string("\"in_game\":") + (g.in_game ? "true" : "false") +
+                ",\"city_window\":null,\"tax_window\":null,\"notice\":null,\"dialog\":" + sys_dialog_json);
+}
+
+// Blocked reads only what GameInit fixed, so the pipe thread may use it.
+bool GameBlockedCached(std::string& err) { return Blocked(err); }
 
 // Only what the player can see on screen: their own civ, units and cities in
 // full; other civs' units and cities as the map shows them; tiles as the
@@ -2185,7 +2256,10 @@ std::string GameSnapshotJson() {
   out += ",\"difficulty\":" + std::to_string(game->difficulty);
   out += ",\"active_unit\":" + std::to_string(game->active_unit);
   out += ",\"move_unit\":" + std::to_string(MoveUnit());
-  out += ",\"civ\":{\"gold\":" + std::to_string(civ->gold);
+  out += ",\"civ\":{\"name\":" + JsonString(CivText(kVaCivName, human));
+  out += ",\"leader\":" + JsonString(CivText(kVaCivLeaderName, human));
+  out += ",\"title\":" + JsonString(CivText(kVaCivLeaderTitle, human));
+  out += ",\"gold\":" + std::to_string(civ->gold);
   out += ",\"tax_rate\":" + std::to_string(civ->tax_rate);
   out += ",\"science_rate\":" + std::to_string(civ->science_rate);
   out += ",\"lux_rate\":" + std::to_string(10 - civ->tax_rate - civ->science_rate);
@@ -2339,12 +2413,29 @@ std::string GameActJson(const ActArgs& a) {
   // Pick an entry of the dialog's options by index or by exact text.
   if (name == "respond") {
     if (Blocked(err)) return err;
-    return ClickMenuOption(a.option, a.text, a.has_edit ? &a.edit : nullptr);
+    // Windows dialogs are answered from the pipe thread (server.cpp).
+    if (a.windows) return ErrJson("no_dialog", "Windows 对话框已经关了，先用 dialog 看一下");
+    if (a.has_file) return ErrJson("illegal", "现在打开的是游戏的对话框，file 只用于保存和打开文件的对话框");
+    return ClickMenuOption(a.option, a.text, a.has_edit ? &a.edits : nullptr);
   }
   if (!RequireMatch(err)) return err;
   if (DialogPtr()) {
     return std::string("{\"ok\":false,\"error\":\"modal_open\",\"reason\":\"已有对话框\",") +
            "\"dialog\":" + DialogJson() + "}";
+  }
+
+  // Game menu items, as a click on them: Windows' file dialog (save, load)
+  // or the game's own confirmation (quit) comes next.
+  if (name == "save_game" || name == "load_game" || name == "quit_game") {
+    if (!HumansTurn()) return ErrJson("not_your_turn", "当前不是人类玩家的行动阶段");
+    const wchar_t* shortcut = name == "save_game" ? L"Ctrl+S" : name == "load_game" ? L"Ctrl+L" : L"Ctrl+Q";
+    MenuCommand cmd = FindCommand(shortcut);
+    if (!cmd.id) return ErrJson("illegal", "游戏菜单里没有这一项");
+    if (!cmd.enabled) return ErrJson("illegal", "游戏菜单里这一项是灰的");
+    HWND main = MainWindow();
+    if (!main) return ErrJson("game_fault", "找不到游戏窗口");
+    PostMessageA(main, WM_COMMAND, cmd.id, 0);
+    return OkJson("\"posted\":true");
   }
 
   if (name == "activate" || name == "move" || name == "goto" || name == "order" ||

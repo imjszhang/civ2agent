@@ -1,5 +1,6 @@
 #include "game.h"
 #include "jsonutil.h"
+#include "sysdlg.h"
 
 #include <windows.h>
 
@@ -120,6 +121,7 @@ void ExecuteJob(const std::shared_ptr<Job>& job) {
 }
 
 void Pump() {
+  GameCacheGate();
   GameObserveDialog();
   if (g_running && IsAbandoned(g_running)) {
     GameCancelPending();
@@ -171,6 +173,36 @@ void Pump() {
   g_running = job;
   ExecuteJob(job);
   if (g_running == job && IsDone(job)) g_running.reset();
+}
+
+// Takes a request back out of the queue before the game thread starts it.
+bool Withdraw(const std::shared_ptr<Job>& job) {
+  std::lock_guard<std::mutex> lock(g_qmu);
+  for (auto it = g_queue.begin(); it != g_queue.end(); ++it) {
+    if (*it == job) {
+      g_queue.erase(it);
+      return true;
+    }
+  }
+  return false;
+}
+
+// The answer while a Windows dialog holds the game thread, from the pipe
+// thread: status and dialog report it, respond answers it, the rest waits.
+std::string SystemDialogReply(const Job& job, const std::string& dialog) {
+  if (job.op == "hello") return GameHelloDuringSysDialog();
+  std::string err;
+  if (GameBlockedCached(err)) return err;
+  if (job.op == "menu") return GameDialogDuringSysDialog(dialog);
+  if (job.op == "act" && job.act.name == "respond") {
+    if (!job.act.windows)
+      return "{\"ok\":false,\"error\":\"modal_open\",\"reason\":\"打开的是 Windows 对话框，不是刚才那个，先用 dialog "
+             "看一下\",\"dialog\":" + dialog + "}";
+    if (job.act.has_edit) return ErrJson("illegal", "Windows 对话框没有游戏的输入框，文件名用 file");
+    return SysDialogRespond(job.act.option, job.act.text, job.act.has_file ? &job.act.file : nullptr);
+  }
+  return "{\"ok\":false,\"error\":\"modal_open\",\"reason\":\"Windows 对话框（保存或打开文件）在等回答，先 respond\","
+         "\"dialog\":" + dialog + "}";
 }
 
 LRESULT WINAPI DispatchHook(const MSG* msg) {
@@ -326,6 +358,25 @@ class Parser {
     ++i_;
     return true;
   }
+  bool ReadStringArray(std::vector<std::string>& items, std::string& err) {
+    Eat('[');
+    Skip();
+    if (Eat(']')) return true;
+    for (;;) {
+      Skip();
+      std::string v;
+      if (!ReadString(v)) {
+        err = "数组里只能是字符串";
+        return false;
+      }
+      items.push_back(v);
+      Skip();
+      if (Eat(',')) continue;
+      if (Eat(']')) return true;
+      err = "数组没有正确结束";
+      return false;
+    }
+  }
   bool ReadString(std::string& out) {
     if (!Eat('"')) return false;
     out.clear();
@@ -359,7 +410,19 @@ class Parser {
       else if (key == "text") job.act.text = v;
       else if (key == "item") job.act.item = v;
       else if (key == "edit") {
-        job.act.edit = v;
+        job.act.edits = {v};
+        job.act.has_edit = true;
+      } else if (key == "file") {
+        job.act.file = v;
+        job.act.has_file = true;
+      }
+      return true;
+    }
+    if (Peek() == '[') {
+      std::vector<std::string> items;
+      if (!ReadStringArray(items, err)) return false;
+      if (key == "edits") {
+        job.act.edits = items;
         job.act.has_edit = true;
       }
       return true;
@@ -374,6 +437,7 @@ class Parser {
         }
         ++i_;
       }
+      if (key == "windows") job.act.windows = val;
       return true;
     }
     if (Peek() == 'n') {
@@ -451,16 +515,29 @@ void ServeLoop() {
         if (job->op == "skip-intro") job->op = "skip_intro";
         if (job->op == "end_turn" && job->timeout_ms == 8000) job->timeout_ms = 120000;
         if (job->op == "skip_intro" && job->timeout_ms == 8000) job->timeout_ms = 60000;
+        std::string resp;
+        // A Windows dialog holds the game thread: answer from here at once,
+        // a queued request would only time out.
+        std::string sys = SysDialogJson();
+        std::string now_resp;
+        if (!sys.empty()) now_resp = SystemDialogReply(*job, sys);
+        else if (job->act.windows) now_resp = ErrJson("no_dialog", "Windows 对话框已经关了，先用 dialog 看一下");
+        if (!now_resp.empty()) {
+          resp = WithId(job->id, now_resp) + "\n";
+          DWORD wrote = 0;
+          WriteFile(pipe, resp.data(), static_cast<DWORD>(resp.size()), &wrote, nullptr);
+          continue;
+        }
         {
           std::lock_guard<std::mutex> lock(g_qmu);
           g_queue.push_back(job);
         }
         WakeGame();
-        std::string resp;
         {
           std::unique_lock<std::mutex> lock(job->mu);
           auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(job->timeout_ms);
           bool signaled = false;
+          bool withdrawn = false;
           while (!signaled) {
             auto now = std::chrono::steady_clock::now();
             if (now >= deadline) break;
@@ -469,11 +546,24 @@ void ServeLoop() {
             signaled = job->cv.wait_for(lock, slice, [&] { return job->done; });
             if (signaled) break;
             lock.unlock();
-            GameWakeUi(job->op == "skip_intro");
+            sys = SysDialogJson();
+            // Not started yet, and a Windows dialog opened meanwhile: the game
+            // thread cannot take it now.
+            if (!sys.empty() && Withdraw(job)) {
+              withdrawn = true;
+              lock.lock();
+              break;
+            }
+            // Keys and clicks for the opening movie must not reach a file dialog.
+            if (sys.empty()) GameWakeUi(job->op == "skip_intro");
             WakeGame();
             lock.lock();
           }
-          if (!signaled) {
+          if (withdrawn) {
+            job->abandoned = true;
+            job->done = true;
+            resp = WithId(job->id, SystemDialogReply(*job, sys));
+          } else if (!signaled) {
             job->abandoned = true;
             job->done = true;
             resp = WithId(job->id, ErrJson("timeout", "游戏线程没有在时限内完成命令"));

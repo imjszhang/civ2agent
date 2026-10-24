@@ -9,15 +9,23 @@ The commands, their help, `tools` (JSON Schema tool definitions) and `call`
 (run a command with a JSON object of arguments) are all generated from
 COMMANDS, so they cannot disagree. Each action is one thing a player can do in
 the game's own interface; the DLL refuses what the interface would not allow.
+save-game, load-game and quit-game are such actions too, made of the clicks a
+player makes in the game's menu, Windows' file dialog and the game's replies.
+
+While a game session is active (civ2session.py), every call is also appended
+to that session's log.jsonl.
 """
 
 import argparse
 import ctypes
 import json
+import os
+import subprocess
 import sys
 import time
 from ctypes import wintypes
 from dataclasses import dataclass
+from pathlib import Path
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -25,7 +33,9 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 PIPE = r"\\.\pipe\civ2agent"
-PROTOCOL = 2
+PROTOCOL = 3
+AGENT_ROOT = Path(__file__).resolve().parents[1]
+GAME_ROOT = AGENT_ROOT.parent
 
 EXIT_OK = 0
 EXIT_REFUSED = 1
@@ -56,6 +66,43 @@ def exit_code(response):
     if response.get("error") in ("not_connected", "timeout"):
         return EXIT_UNREACHABLE
     return EXIT_REFUSED
+
+
+def games_dir():
+    """Where agent-owned games live (civ2session.py); CIV2AGENT_GAMES_DIR overrides it."""
+    return Path(os.environ.get("CIV2AGENT_GAMES_DIR") or AGENT_ROOT / "games")
+
+
+def active_session():
+    """The active session's lock record ({"id", "dir", ...}), or None."""
+    try:
+        record = json.loads((games_dir() / ".active").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return record if isinstance(record, dict) and record.get("dir") else None
+
+
+def summarize(name, response):
+    """What log.jsonl keeps of a response: state only in outline."""
+    if name == "state" and response.get("ok") and response.get("in_game"):
+        civ = response.get("civ") or {}
+        return {"ok": True, "turn": response.get("turn"), "year": response.get("year"), "gold": civ.get("gold"),
+                "units": len(response.get("units") or []), "cities": len(response.get("cities") or []),
+                "dialog": (response.get("dialog") or {}).get("title")}
+    return response
+
+
+def log_session(name, req, response):
+    session = active_session()
+    if not session:
+        return
+    entry = {"time": time.strftime("%Y-%m-%dT%H:%M:%S"), "command": name, "request": req,
+             "response": summarize(name, response)}
+    try:
+        with open(Path(session["dir"]) / "log.jsonl", "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError:
+        pass  # the log must not change the command's outcome
 
 
 def transact(payload, connect_s=10.0):
@@ -143,8 +190,14 @@ def dialog_key(dialog):
 def choose(request, connect_s=10.0, settle_s=2.0):
     """Answer the dialog on screen and report what replaced it. The DLL answers
     most dialogs through the game's own handlers; for the rest it returns
-    screen coordinates, because those controls ignore posted mouse input."""
-    before = dialog_key(current_dialog())
+    screen coordinates, because those controls ignore posted mouse input.
+    Windows' own dialogs (file name, replace?) are answered with window
+    messages; the request says which kind the caller saw, so an answer meant
+    for one never presses a button in the other."""
+    shown = current_dialog()
+    before = dialog_key(shown)
+    if shown and shown.get("via") == "windows":
+        request = dict(request, windows=True)
     response = transact(request, connect_s=connect_s)
     click = response.pop("click", None)
     if not response.get("ok"):
@@ -171,12 +224,13 @@ def choose(request, connect_s=10.0, settle_s=2.0):
 @dataclass
 class Param:
     name: str
-    kind: str  # "integer", "string" or "boolean"
+    kind: str  # "integer", "string", "boolean" or "strings" (a repeatable flag)
     help: str
     required: bool = False
     choices: tuple = ()
     default: object = None
     tool: bool = True  # False: a command line convenience, left out of the tool schema
+    wire: str = None  # the pipe field when it differs from name; "" keeps it out of the request
 
     @property
     def flag(self):
@@ -189,9 +243,11 @@ class Command:
     kind: str  # "observe", "act" or "session"
     help: str
     params: tuple = ()
-    build: object = None  # (command, args) -> pipe request; None when run locally
+    build: object = None  # (command, args) -> pipe request
     answers_dialog: bool = False
     connect_s: float = 10.0
+    local: object = None  # (args, connect_s) -> (request, response), for commands made of several requests
+    after: object = None  # (args, response) -> response shown to the caller
 
 
 def request(op, name=None, **fixed):
@@ -204,23 +260,265 @@ def request(op, name=None, **fixed):
         req.update(fixed)
         for param in command.params:
             value = getattr(args, param.name, None)
-            if param.tool and value is not None and value is not False:
-                req[param.name] = value
+            field = param.name if param.wire is None else param.wire
+            if param.tool and field and value is not None and value is not False:
+                req[field] = value
         return req
 
     return build
 
 
 def build_respond(command, args):
-    if (args.option is None) == (args.text is None):
-        raise UsageError("respond 需要 --option 或 --text，二选一")
+    if args.option is not None and args.text is not None:
+        raise UsageError("respond 的 --option 和 --text 只能给一个")
+    if args.option is None and args.text is None and args.file is None:
+        raise UsageError("respond 需要 --option 或 --text（Windows 文件对话框也可以只给 --file）")
     return request("act", "respond")(command, args)
+
+
+STATE_FIELDS = ("civ", "units", "foreign_units", "cities", "foreign_cities", "tiles", "diplomacy",
+                "city_window", "tax_window", "notice", "dialog")
+STATE_ALWAYS = ("ok", "error", "reason", "in_game", "turn", "year", "human", "difficulty", "active_unit",
+                "move_unit")
+
+
+def build_state(command, args):
+    for field in fields_of(args.only):
+        if field not in STATE_FIELDS:
+            raise UsageError(f"state --only 没有 {field}，可选：{','.join(STATE_FIELDS)}")
+    return request("snapshot")(command, args)
+
+
+def fields_of(text):
+    return [f.strip() for f in (text or "").split(",") if f.strip()]
+
+
+def keep_fields(args, response):
+    """state --only: the named parts of the picture, plus turn and year."""
+    wanted = fields_of(getattr(args, "only", None))
+    if not wanted or not response.get("in_game"):
+        return response
+    return {k: v for k, v in response.items() if k in STATE_ALWAYS or k in wanted}
 
 
 def build_produce(command, args):
     if args.item is not None and args.item_id is not None:
         raise UsageError("produce 的 --item 和 --item-id 只能给一个")
     return request("act", "produce", timeout_ms=20000)(command, args)
+
+
+# Saving, loading and quitting, step by step as a player does them: a click
+# in the game's menu, then Windows' file dialog or the game's confirmation,
+# then the game's message. Each step goes through respond, so the screen
+# shows every one of them.
+
+def wait_dialog(test, timeout_s):
+    """The first dialog on screen that test accepts, or None at the deadline."""
+    deadline = time.time() + timeout_s
+    while True:
+        dialog = current_dialog()
+        if dialog and test(dialog):
+            return dialog
+        if time.time() >= deadline:
+            return None
+        time.sleep(0.25)
+
+
+def is_file_dialog(dialog):
+    return dialog.get("via") == "windows" and dialog.get("kind") == "file"
+
+
+def option_with(dialog, *texts):
+    return next((o for o in dialog.get("options") or [] if o.get("text") in texts and not o.get("disabled")), None)
+
+
+def press_ok(dialog):
+    """Close a message that has only OK to press."""
+    choice = option_with(dialog, "确定") or next(iter(dialog.get("options") or []), None)
+    if not choice:
+        return fail("no_dialog", "消息框上没有按钮")
+    return choose({"op": "act", "name": "respond", "option": choice["index"]})
+
+
+def answer_file_dialog(path, overwrite):
+    """Type the name into Windows' file dialog and press its button; answer
+    the replace question it can ask. Returns None when the dialog is gone."""
+    response = choose({"op": "act", "name": "respond", "file": str(path)})
+    if not response.get("ok"):
+        return response
+    after = response.get("dialog")
+    if after and after.get("via") == "windows" and after.get("kind") == "message":
+        # Windows asks before replacing a file; yes is button 6 in every language.
+        yes = next((o for o in after.get("options") or [] if o.get("button") == 6), None)
+        no = next((o for o in after.get("options") or [] if o.get("button") in (7, 2)), None)
+        pick = yes if overwrite else no
+        if not pick:
+            return fail("illegal", "Windows 对话框问了一个不认识的问题", dialog=after)
+        choose({"op": "act", "name": "respond", "option": pick["index"]})
+        if not overwrite:
+            return fail("illegal", "文件已经存在；要覆盖就加 --overwrite", dialog=current_dialog())
+    return None
+
+
+def save_game(path, overwrite=False, connect_s=10.0):
+    """Game > 储存游戏, the file name, Save, then OK on the game's message."""
+    path = Path(path)
+    if not path.is_absolute() or path.suffix.upper() != ".SAV":
+        return fail("usage", "存档文件名要用绝对路径，扩展名 .SAV")
+    if not path.parent.is_dir():
+        return fail("usage", f"目录不存在：{path.parent}")
+    if path.exists() and not overwrite:
+        return fail("illegal", "文件已经存在；要覆盖就加 --overwrite")
+    started = time.time()
+    posted = transact({"op": "act", "name": "save_game"}, connect_s=connect_s)
+    if not posted.get("ok"):
+        return posted
+    dialog = wait_dialog(lambda d: is_file_dialog(d) or d.get("via") != "windows", 15)
+    if not dialog or not is_file_dialog(dialog):
+        return fail("game_fault", "游戏没有打开保存文件的对话框", dialog=dialog)
+    refused = answer_file_dialog(path, overwrite)
+    if refused:
+        return refused
+    message = wait_dialog(lambda d: d.get("via") != "windows", 30)
+    if not message:
+        return fail("timeout", "保存后游戏没有显示消息")
+    title = message.get("title") or ""
+    press_ok(message)
+    if "存档完毕" not in title:
+        return fail("game_fault", "游戏没有存成：" + (message.get("text") or title).strip(), dialog=message)
+    if not path.exists() or path.stat().st_mtime < started - 2:
+        return fail("game_fault", "游戏说存好了，但文件没有写出来")
+    return {"ok": True, "file": str(path), "bytes": path.stat().st_size, "message": (message.get("text") or "").strip()}
+
+
+def load_game(path, connect_s=10.0):
+    """Game > 载入游戏 in a match, or 读取进度 on the main menu; the file name,
+    Open, then OK on the game's message (困难程度: ...)."""
+    path = Path(path)
+    if not path.is_absolute() or not path.is_file():
+        return fail("usage", "要读取的存档要用绝对路径，并且文件必须存在")
+    status = transact({"op": "hello"}, connect_s=connect_s)
+    if not status.get("ok"):
+        return status
+    if status.get("in_game"):
+        posted = transact({"op": "act", "name": "load_game"}, connect_s=connect_s)
+        if not posted.get("ok"):
+            return posted
+    else:
+        menu = current_dialog() or {}
+        row = next((o for o in menu.get("options") or [] if (o.get("text") or "").strip() == "读取进度"), None)
+        if not row or not option_with(menu, "开始新游戏"):
+            return fail("illegal", "不在主菜单，也不在对局中", dialog=menu or None)
+        picked = choose({"op": "act", "name": "respond", "option": row["index"]})
+        if not picked.get("ok"):
+            return picked
+    dialog = wait_dialog(lambda d: is_file_dialog(d) or d.get("via") != "windows", 15)
+    if not dialog or not is_file_dialog(dialog):
+        return fail("game_fault", "游戏没有打开读取文件的对话框", dialog=dialog)
+    refused = answer_file_dialog(path, False)
+    if refused:
+        return refused
+    message = wait_dialog(lambda d: d.get("via") != "windows", 60)
+    if not message:
+        return fail("timeout", "读取后游戏没有显示消息")
+    title = message.get("title") or ""
+    press_ok(message)
+    if not title.startswith("困难程度"):
+        return fail("game_fault", "游戏没有读进来：" + (message.get("text") or title).strip(), dialog=message)
+    state = transact({"op": "snapshot"}, connect_s=connect_s)
+    if not state.get("in_game"):
+        return fail("game_fault", "读档后不在对局中", state=state)
+    civ = state.get("civ") or {}
+    return {"ok": True, "file": str(path), "turn": state.get("turn"), "year": state.get("year"),
+            "civ": civ.get("name"), "leader": civ.get("leader"), "dialog": current_dialog()}
+
+
+def to_main_menu(timeout_s=60):
+    """Answer what comes between a match and the main menu the plain way."""
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        dialog = current_dialog()
+        if dialog and option_with(dialog, "开始新游戏"):
+            return dialog
+        if dialog:
+            choice = option_with(dialog, "取消", "确定") or next(iter(dialog.get("options") or []), None)
+            if choice:
+                choose({"op": "act", "name": "respond", "option": choice["index"]})
+                continue
+        time.sleep(0.4)
+    return None
+
+
+def game_running():
+    try:
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq civ2.exe", "/FO", "CSV", "/NH"],
+                             capture_output=True, text=True, errors="replace", timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return "civ2.exe" in out.lower()
+
+
+def quit_game(exit_program=False, connect_s=10.0):
+    """Game > 离开游戏 and 是 at 确认; with exit_program, then 取消 on the main
+    menu, which closes the game."""
+    status = transact({"op": "hello"}, connect_s=connect_s)
+    if not status.get("ok"):
+        return status
+    if status.get("in_game"):
+        posted = transact({"op": "act", "name": "quit_game"}, connect_s=connect_s)
+        if not posted.get("ok"):
+            return posted
+        confirm = wait_dialog(lambda d: option_with(d, "是") is not None, 15)
+        if not confirm:
+            return fail("game_fault", "游戏没有问是否离开")
+        answered = choose({"op": "act", "name": "respond", "text": "是"})
+        if not answered.get("ok"):
+            return answered
+    menu = to_main_menu()
+    if not menu:
+        return fail("timeout", "没有回到主菜单", dialog=current_dialog())
+    if not exit_program:
+        return {"ok": True, "at_menu": True, "exited": False}
+    transact({"op": "act", "name": "respond", "text": "取消"}, connect_s=connect_s)
+    deadline = time.time() + 30
+    while game_running() and time.time() < deadline:
+        time.sleep(0.5)
+    if game_running():
+        return fail("timeout", "按了取消，游戏还没有退出")
+    return {"ok": True, "at_menu": False, "exited": True}
+
+
+def session_guard(action):
+    session = active_session()
+    if not session:
+        return None
+    return fail("session_policy",
+                f"游戏局 {session.get('id')} 正在进行，{action} 由 civ2session.py 管理，agent 不能自己做")
+
+
+def local_save(args, connect_s):
+    path = Path(args.file)
+    session = active_session()
+    if session:
+        saves = (Path(session["dir"]) / "saves").resolve()
+        path = path if path.is_absolute() else saves / path
+        if path.resolve().parent != saves:
+            return {"op": "save_game"}, fail("session_policy", f"游戏局进行中，只能存到 {saves}")
+    return {"op": "save_game", "file": str(path)}, save_game(path, args.overwrite, connect_s)
+
+
+def local_load(args, connect_s):
+    refused = session_guard("读档")
+    return {"op": "load_game", "file": args.file}, refused or load_game(args.file, connect_s)
+
+
+def local_quit(args, connect_s):
+    refused = session_guard("离开游戏")
+    return {"op": "quit_game", "exit": args.exit}, refused or quit_game(args.exit, connect_s)
+
+
+def local_wait_ready(args, connect_s):
+    return {"op": "hello"}, wait_ready(args.in_game, args.wait_s)
 
 
 UNIT = Param("unit", "integer", "己方单位的 index，取自 state 的 units", required=True)
@@ -232,9 +530,12 @@ COMMANDS = (
     Command("status", "observe", "连接状态：协议版本、civ2.exe 哈希、是否在对局中、是否有对话框。",
             build=request("hello"), connect_s=2.0),
     Command("state", "observe",
-            "当前局面，只含玩家在画面上能看到的：己方文明、单位和城市，看得见的外国单位和城市，探索过的地形，外交状态，当前对话框。",
-            params=(Param("out", "string", "另存一份到这个 JSON 文件", tool=False),),
-            build=request("snapshot")),
+            "当前局面，只含玩家在画面上能看到的：己方文明、单位和城市，看得见的外国单位和城市，探索过的地形，外交状态，当前对话框。"
+            "tiles 很大，用 --only 只取需要的部分。",
+            params=(Param("only", "string", "只返回这些部分，逗号分隔：" + ",".join(STATE_FIELDS) +
+                          "（turn、year 等总是返回）", wire=""),
+                    Param("out", "string", "另存一份到这个 JSON 文件", tool=False)),
+            build=build_state, after=keep_fields),
     Command("dialog", "observe", "当前对话框：标题、正文、可选项、输入框。没有对话框时 dialog 为 null。",
             build=request("menu")),
     Command("events", "observe", "取走上次以来的事件：对话框出现和关闭、建议框、己方单位损失或受伤、己方相关的城市易手、研究项变化。",
@@ -243,7 +544,9 @@ COMMANDS = (
             "回答当前对话框，相当于玩家点选一项；先用 dialog 看选项。via 为 mouse 的对话框要用真实鼠标点，期间不要动鼠标。",
             params=(Param("option", "integer", "dialog.options 里的 index"),
                     Param("text", "string", "选项的文字，与 dialog.options 里的 text 完全一致"),
-                    Param("edit", "string", "先在输入框里填这段文字再选，用于城市名（最多 15 字节）、领袖名（23 字节）；汉字算 2 字节")),
+                    Param("edit", "strings", "先在输入框里填字再选，按输入框的顺序，可给多次（自定地图尺寸有横、纵两个）；"
+                          "城市名最多 15 字节、领袖名 23 字节，汉字算 2 字节", wire="edits"),
+                    Param("file", "string", "Windows 文件对话框（kind 为 file）：先在文件名框填这个路径；只给它时按保存或打开")),
             build=build_respond, answers_dialog=True),
     Command("activate", "act",
             "选中一个己方单位，相当于在地图上点它（会叫醒睡眠或设防的单位）。同一格有几个单位时游戏弹出单位列表，"
@@ -277,9 +580,24 @@ COMMANDS = (
     Command("end-turn", "act", "结束回合，等到再次轮到玩家。中途有对话框时返回 modal_open，先 respond，再看 turn_ended。",
             params=(Param("timeout_ms", "integer", "最多等多少毫秒", default=120000),),
             build=request("end_turn")),
+    Command("save-game", "act",
+            "存档，和玩家一样：点「游戏」菜单的「储存游戏」，在 Windows 文件对话框里填文件名，按保存，再关掉「存档完毕!」。"
+            "游戏局进行中只能存到这局的 saves 目录（可只给文件名）。",
+            params=(Param("file", "string", "存档文件，绝对路径，扩展名 .SAV", required=True),
+                    Param("overwrite", "boolean", "文件已存在时覆盖（Windows 会问一次，回答「是」）")),
+            local=local_save),
+    Command("load-game", "act",
+            "读档：对局中点「游戏」菜单的「载入游戏」，在主菜单选「读取进度」；填文件名，按打开，再关掉读档的消息。游戏局进行中不能用。",
+            params=(Param("file", "string", "存档文件，绝对路径", required=True),),
+            local=local_load),
+    Command("quit-game", "act",
+            "离开游戏：点「游戏」菜单的「离开游戏」，在「确认」里选「是」，回到主菜单。游戏局进行中不能用。",
+            params=(Param("exit", "boolean", "回到主菜单后再按取消，退出游戏程序"),),
+            local=local_quit),
     Command("wait-ready", "session", "等游戏启动、civ2agent 就绪；协议版本不对时返回 protocol_mismatch。",
             params=(Param("in_game", "boolean", "还要等到进入对局"),
-                    Param("wait_s", "integer", "最多等多少秒", default=60))),
+                    Param("wait_s", "integer", "最多等多少秒", default=60)),
+            local=local_wait_ready),
     Command("skip-intro", "session", "跳过开场动画，直到主菜单出现。",
             params=(Param("timeout_ms", "integer", "最多等多少毫秒", default=60000),),
             build=request("skip_intro")),
@@ -326,6 +644,9 @@ def add_param(parser, param):
     if param.kind == "boolean":
         parser.add_argument(param.flag, dest=param.name, action="store_true", help=param.help)
         return
+    if param.kind == "strings":
+        parser.add_argument(param.flag, dest=param.name, action="append", help=param.help)
+        return
     parser.add_argument(param.flag, dest=param.name, type=int if param.kind == "integer" else str,
                         required=param.required, choices=param.choices or None, default=param.default,
                         help=param.help)
@@ -361,6 +682,8 @@ def manifest():
             if not param.tool:
                 continue
             prop = {"type": param.kind, "description": param.help}
+            if param.kind == "strings":
+                prop = {"type": "array", "items": {"type": "string"}, "description": param.help}
             if param.choices:
                 prop["enum"] = list(param.choices)
             if param.default is not None:
@@ -402,7 +725,11 @@ def call_args(name, text):
         value = given.get(param.name, param.default if param.tool else None)
         if param.kind == "boolean" and value is None:
             value = False
-        if value is not None:
+        if param.kind == "strings" and value is not None:
+            if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+                raise UsageError(f"参数 {param.name} 应为字符串数组")
+            value = value or None
+        elif value is not None:
             expected = {"integer": int, "string": str, "boolean": bool}[param.kind]
             if isinstance(value, bool) and expected is not bool or not isinstance(value, expected):
                 raise UsageError(f"参数 {param.name} 应为 {param.kind}")
@@ -416,13 +743,15 @@ def call_args(name, text):
 
 def run(command, args, connect_s):
     """Run one command; returns (request, response)."""
-    if command.name == "wait-ready":
-        return {"op": "hello"}, wait_ready(args.in_game, args.wait_s)
+    if command.local:
+        return command.local(args, connect_s)
     req = command.build(command, args)
     if command.answers_dialog:
         response = choose(req, connect_s=connect_s)
     else:
         response = transact(req, connect_s=connect_s)
+    if command.after:
+        response = command.after(args, response)
     out = getattr(args, "out", None)
     if out:
         with open(out, "w", encoding="utf-8") as handle:
@@ -472,15 +801,18 @@ def replay(path, record, connect_s):
     return code
 
 
-def emit(response, record=None, req=None):
+def emit(response, record=None, req=None, name=None):
     print(json.dumps(response, ensure_ascii=False))
     if record:
         with open(record, "a", encoding="utf-8") as handle:
             handle.write(json.dumps({"request": req, "response": response}, ensure_ascii=False) + "\n")
+    if name:
+        log_session(name, req, response)
     return exit_code(response)
 
 
 def main(argv):
+    name = None
     try:
         hint = renamed_hint(argv)
         if hint:
@@ -495,12 +827,13 @@ def main(argv):
             command, args = call_args(args.tool, args.arguments)
         else:
             command = BY_NAME[args.cmd]
+        name = command.name
         req, response = run(command, args, timeout or command.connect_s)
-        return emit(response, record, req)
+        return emit(response, record, req, name)
     except UsageError as exc:
         return emit(fail("usage", str(exc)))
     except Exception as exc:  # report, never a bare traceback
-        return emit(fail("cli_fault", f"{type(exc).__name__}: {exc}"))
+        return emit(fail("cli_fault", f"{type(exc).__name__}: {exc}"), name=name)
 
 
 if __name__ == "__main__":

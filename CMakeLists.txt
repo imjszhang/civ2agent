@@ -20,6 +20,7 @@ add_library(civ2agent SHARED
   dll/dllmain.cpp
   dll/game.cpp
   dll/server.cpp
+  dll/sysdlg.cpp
 )
 target_include_directories(civ2agent PRIVATE dll)
 target_compile_options(civ2agent PRIVATE /W3 /EHa /utf-8)

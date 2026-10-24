@@ -344,3 +344,18 @@ constexpr int kMenuKingdom = 2;
 constexpr int kMenuTaxRate = 0x201;
 // @PRODUCTION record ids: unit type, 0x3E + improvement, 0x65 + wonder (= 0x3E + 39 + wonder).
 constexpr int kProductionImprovementBase = 0x3E;
+
+// Names the game shows for a civ (the status bar, the save and load
+// messages "%2 的 %0 %1"). cdecl (civ) -> game string, no side effects.
+constexpr std::uint32_t kVaCivLeaderName = 0x00493B10;   // 尤利乌斯·恺撒, or the name typed at the start
+constexpr std::uint32_t kVaCivLeaderTitle = 0x00493BA6;  // by government and gender: 皇帝
+constexpr std::uint32_t kVaCivName = 0x00493C7D;         // as in the tribe list: 罗马人
+
+// Saving and loading (static analysis of 0x47758C and 0x477D8C). Both ask
+// for the file with GetSaveFileNameA / GetOpenFileNameA (0x4731D2: flags
+// 0x80E, open adds FILEMUSTEXIST; no hook; a 256-byte name buffer). That
+// dialog runs Windows' own loop, which does not dispatch through civ2.exe's
+// import, so the pump below does not run while it is open (sysdlg.h).
+// The loader 0x475666 keeps the folder of the loaded save (0x64BB08), and the
+// end-of-turn autosave 0x488937 writes <2 bytes of leader name>_自动.SAV
+// there; a new game sets it to the game folder (0x51D9A0).

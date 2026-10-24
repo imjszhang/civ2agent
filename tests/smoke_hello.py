@@ -4,7 +4,6 @@
 import json
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -30,31 +29,22 @@ def main():
         if code != 0:
             print("launcher exit", code)
             return code
-        deadline = time.time() + 20
-        response = None
-        while time.time() < deadline:
-            run = subprocess.run(
-                [sys.executable, str(CLI), "hello"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=15,
-            )
-            if run.stdout.strip():
-                response = json.loads(run.stdout)
-                break
-            time.sleep(0.5)
-        if response is None:
-            print("no hello")
-            return 1
+        run = subprocess.run(
+            [sys.executable, str(CLI), "wait-ready", "--wait-s", "20"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=40,
+        )
+        response = json.loads(run.stdout)
         print(json.dumps(response, ensure_ascii=False, indent=2))
-        if response.get("protocol") != 1:
+        if not response.get("ok") or response.get("protocol") != 2:
             return 1
         if "exe_hash" not in response or "uia_loaded" not in response:
             return 1
         snap = subprocess.run(
-            [sys.executable, str(CLI), "snapshot"],
+            [sys.executable, str(CLI), "state"],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -68,7 +58,7 @@ def main():
                 "in game turn",
                 snapshot.get("turn"),
                 "gold",
-                snapshot.get("gold"),
+                (snapshot.get("civ") or {}).get("gold"),
                 "cities",
                 len(snapshot.get("cities") or []),
             )

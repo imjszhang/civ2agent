@@ -26,18 +26,7 @@ bool g_abort_on_dialog = false;
 struct Job {
   int id = 0;
   std::string op;
-  std::string name;
-  std::string kind;
-  std::string order;
-  bool debug = false;
-  int unit = -1;
-  int city = -1;
-  int x = 0;
-  int y = 0;
-  int tech = -1;
-  int tax = -1;
-  int science = -1;
-  int button = -1;
+  ActArgs act;
   int timeout_ms = 8000;
   std::string response;
   bool done = false;
@@ -80,8 +69,20 @@ bool SafeOp(const Job& job) {
   if (job.op == "hello" || job.op == "snapshot" || job.op == "events" || job.op == "menu" ||
       job.op == "skip_intro")
     return true;
-  if (job.op == "act" && (job.name == "respond" || job.name == "menu")) return true;
+  if (job.op != "act") return false;
+  if (job.act.name == "respond") return true;
+  // A window the game holds open takes clicks on its own controls, as a
+  // dialog takes answers: the city window, the tax rate window.
+  if (GameDialogOpen()) return false;
+  if (job.act.name == "produce" || job.act.name == "close_city") return GameCityWindowOpen();
+  if (job.act.name == "rates") return GameTaxWindowOpen();
   return false;
+}
+
+// These acts expect dialogs: respond answers one, produce and rates go
+// through the game's own windows and tell their dialogs from unexpected ones.
+bool HandlesDialogs(const std::string& name) {
+  return name == "respond" || name == "produce" || name == "rates";
 }
 
 void ExecuteJob(const std::shared_ptr<Job>& job) {
@@ -90,7 +91,7 @@ void ExecuteJob(const std::shared_ptr<Job>& job) {
     return;
   }
   if (job->op == "snapshot") {
-    FinishJob(job, WithId(job->id, GameSnapshotJson(job->debug)));
+    FinishJob(job, WithId(job->id, GameSnapshotJson()));
     return;
   }
   if (job->op == "events") {
@@ -108,11 +109,8 @@ void ExecuteJob(const std::shared_ptr<Job>& job) {
     return;
   }
   if (job->op == "act" || job->op == "end_turn") {
-    g_abort_on_dialog = job->op == "end_turn" || (job->name != "respond" && job->name != "menu");
-    std::string resp = job->op == "end_turn"
-                           ? GameBeginEndTurnJson()
-                           : GameActJson(job->name, job->unit, job->city, job->x, job->y, job->tech, job->tax,
-                                         job->science, job->button, job->kind, job->order);
+    g_abort_on_dialog = job->op == "end_turn" || !HandlesDialogs(job->act.name);
+    std::string resp = job->op == "end_turn" ? GameBeginEndTurnJson() : GameActJson(job->act);
     if (resp.empty() && GamePendingActive()) return;
     g_abort_on_dialog = false;
     if (!IsDone(job)) FinishJob(job, WithId(job->id, resp));
@@ -128,7 +126,7 @@ void Pump() {
     g_abort_on_dialog = false;
     g_running.reset();
   }
-  if (g_running && !IsDone(g_running) && g_abort_on_dialog && GameDialogOpen()) {
+  if (g_running && !IsDone(g_running) && g_abort_on_dialog && (GameDialogOpen() || GameWindowModal())) {
     std::string resp;
     if (GameTakeModalAbort(resp)) {
       GameCancelPending();
@@ -138,7 +136,9 @@ void Pump() {
   }
   if (g_running && !IsDone(g_running) && GamePendingActive()) {
     std::string resp = GamePollPending(g_depth);
-    if (!resp.empty()) {
+    // The poll can run a game loop that finishes the job (and resets
+    // g_running) further down, before it returns here.
+    if (!resp.empty() && g_running && !IsDone(g_running)) {
       g_abort_on_dialog = false;
       FinishJob(g_running, WithId(g_running->id, resp));
     }
@@ -147,12 +147,26 @@ void Pump() {
   if (g_running) return;
 
   std::shared_ptr<Job> job;
+  bool blocked_by_dialog = false;
   {
     std::lock_guard<std::mutex> lock(g_qmu);
     if (g_queue.empty()) return;
-    if (g_depth > 1 && !SafeOp(*g_queue.front())) return;
+    if (g_depth > 1 && !SafeOp(*g_queue.front())) {
+      // Inside a dialog's own loop a game command cannot run. Answer it with
+      // the dialog now: left queued it would time out and run late, and
+      // end_turn's wake-up Enter would confirm a dialog the agent never saw.
+      if (!GameDialogOpen() && !GameWindowModal()) return;
+      blocked_by_dialog = true;
+    }
     job = g_queue.front();
     g_queue.pop_front();
+  }
+  if (IsAbandoned(job)) return;  // the client already got a timeout
+  if (blocked_by_dialog) {
+    std::string resp;
+    if (!GameTakeModalAbort(resp)) resp = ErrJson("modal_open", "出现对话框");
+    FinishJob(job, WithId(job->id, resp));
+    return;
   }
   g_running = job;
   ExecuteJob(job);
@@ -267,6 +281,46 @@ class Parser {
     while (i_ < s_.size() && std::isspace(static_cast<unsigned char>(s_[i_]))) ++i_;
   }
   char Peek() const { return i_ < s_.size() ? s_[i_] : 0; }
+  bool ReadHex4(unsigned& v) {
+    if (i_ + 4 > s_.size()) return false;
+    v = 0;
+    for (int n = 0; n < 4; ++n) {
+      char h = s_[i_++];
+      v <<= 4;
+      if (h >= '0' && h <= '9') v |= h - '0';
+      else if (h >= 'a' && h <= 'f') v |= h - 'a' + 10;
+      else if (h >= 'A' && h <= 'F') v |= h - 'A' + 10;
+      else return false;
+    }
+    return true;
+  }
+  // \uXXXX (with surrogate pairs) to UTF-8; json.dumps escapes non-ASCII by default.
+  bool ReadUnicodeEscape(std::string& out) {
+    unsigned cp = 0;
+    if (!ReadHex4(cp)) return false;
+    if (cp >= 0xD800 && cp <= 0xDBFF && i_ + 2 <= s_.size() && s_[i_] == '\\' && s_[i_ + 1] == 'u') {
+      i_ += 2;
+      unsigned low = 0;
+      if (!ReadHex4(low) || low < 0xDC00 || low > 0xDFFF) return false;
+      cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
+    }
+    if (cp < 0x80) {
+      out.push_back(static_cast<char>(cp));
+    } else if (cp < 0x800) {
+      out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+      out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else if (cp < 0x10000) {
+      out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+      out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+      out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else {
+      out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+      out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+      out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+      out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    }
+    return true;
+  }
   bool Eat(char c) {
     if (Peek() != c) return false;
     ++i_;
@@ -283,7 +337,9 @@ class Parser {
         if (e == 'n') out.push_back('\n');
         else if (e == 'r') out.push_back('\r');
         else if (e == 't') out.push_back('\t');
-        else out.push_back(e);
+        else if (e == 'u') {
+          if (!ReadUnicodeEscape(out)) return false;
+        } else out.push_back(e);
       } else {
         out.push_back(c);
       }
@@ -298,9 +354,14 @@ class Parser {
         return false;
       }
       if (key == "op") job.op = v;
-      else if (key == "name") job.name = v;
-      else if (key == "kind") job.kind = v;
-      else if (key == "order" || key == "text") job.order = v;
+      else if (key == "name") job.act.name = v;
+      else if (key == "order") job.act.order = v;
+      else if (key == "text") job.act.text = v;
+      else if (key == "item") job.act.item = v;
+      else if (key == "edit") {
+        job.act.edit = v;
+        job.act.has_edit = true;
+      }
       return true;
     }
     if (Peek() == 't' || Peek() == 'f') {
@@ -313,7 +374,6 @@ class Parser {
         }
         ++i_;
       }
-      if (key == "debug") job.debug = val;
       return true;
     }
     if (Peek() == 'n') {
@@ -333,14 +393,14 @@ class Parser {
     }
     i_ = static_cast<size_t>(end - s_.c_str());
     if (key == "id") job.id = static_cast<int>(v);
-    else if (key == "unit") job.unit = static_cast<int>(v);
-    else if (key == "city") job.city = static_cast<int>(v);
-    else if (key == "x") job.x = static_cast<int>(v);
-    else if (key == "y") job.y = static_cast<int>(v);
-    else if (key == "tech" || key == "item") job.tech = static_cast<int>(v);
-    else if (key == "tax") job.tax = static_cast<int>(v);
-    else if (key == "science") job.science = static_cast<int>(v);
-    else if (key == "button") job.button = static_cast<int>(v);
+    else if (key == "unit") job.act.unit = static_cast<int>(v);
+    else if (key == "city") job.act.city = static_cast<int>(v);
+    else if (key == "x") job.act.x = static_cast<int>(v);
+    else if (key == "y") job.act.y = static_cast<int>(v);
+    else if (key == "option") job.act.option = static_cast<int>(v);
+    else if (key == "item_id") job.act.item_id = static_cast<int>(v);
+    else if (key == "tax") job.act.tax = static_cast<int>(v);
+    else if (key == "science") job.act.science = static_cast<int>(v);
     else if (key == "timeout_ms") job.timeout_ms = static_cast<int>(v);
     return true;
   }
@@ -348,9 +408,11 @@ class Parser {
 
 void ServeLoop() {
   for (;;) {
+    // Local clients only. There is no authentication: any local process can
+    // connect and play.
     HANDLE pipe = CreateNamedPipeW(kPipeName, PIPE_ACCESS_DUPLEX,
-                                   PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 1, 1 << 20,
-                                   1 << 16, 0, nullptr);
+                                   PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                                   1, 1 << 20, 1 << 16, 0, nullptr);
     if (pipe == INVALID_HANDLE_VALUE) {
       GameLog("CreateNamedPipe failed %lu", GetLastError());
       Sleep(500);
@@ -407,7 +469,7 @@ void ServeLoop() {
             signaled = job->cv.wait_for(lock, slice, [&] { return job->done; });
             if (signaled) break;
             lock.unlock();
-            GameWakeUi(job->op == "end_turn", job->op == "skip_intro");
+            GameWakeUi(job->op == "skip_intro");
             WakeGame();
             lock.lock();
           }

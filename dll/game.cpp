@@ -363,6 +363,7 @@ std::string ReadGameText(const char* s, int cap) {
 
 std::string DialogOptionsJson(void* dlg);
 std::string DialogEditsJson(void* dlg);
+std::string ModalScreenJson();
 
 std::string DialogHeadJson(void* dlg) {
   auto* base = static_cast<char*>(dlg);
@@ -384,8 +385,9 @@ std::string DialogHeadJson(void* dlg) {
 // picks from, so an index read from modal_open or an event is valid there.
 std::string DialogJson() {
   void* dlg = DialogPtr();
-  if (!dlg) return "null";
-  return "{" + DialogHeadJson(dlg) + "," + DialogOptionsJson(dlg) + DialogEditsJson(dlg) + "}";
+  if (dlg) return "{" + DialogHeadJson(dlg) + "," + DialogOptionsJson(dlg) + DialogEditsJson(dlg) + "}";
+  std::string screen = ModalScreenJson();
+  return screen.empty() ? "null" : screen;
 }
 
 // Advice the game shows without waiting for an answer.
@@ -407,6 +409,181 @@ std::string TechName(int tech) {
   auto* rule = Rules() + tech;
   if (!Readable(rule, sizeof(RulesCivilize))) return {};
   return ReadGameText(SehString(rule->text_index), 80);
+}
+
+// A modal page that is not a popup. Pedia is the advance page after a
+// discovery; View is the foreign-ministry report and the same viewer.
+enum class ModalKind { None, Pedia, View };
+
+int ReadIntAt(std::uint32_t va) {
+  auto* p = At<int>(va);
+  return Readable(p, sizeof(int)) ? *p : 0;
+}
+
+ModalKind CurrentModal() {
+  if (!MatchLive()) return ModalKind::None;
+  if (ReadIntAt(kVaViewWindow + kViewOpen) > 0) return ModalKind::View;
+  if (ReadIntAt(kVaPediaStage) != 0 || ReadIntAt(kVaPediaLive) != 0) return ModalKind::Pedia;
+  return ModalKind::None;
+}
+
+std::string CloseOnlyDialog(const std::string& title, const std::string& text) {
+  return "{\"title\":" + JsonString(title) + ",\"text\":" + JsonString(text) +
+         ",\"kind\":\"controls\",\"via\":\"game\",\"options\":[{\"index\":0,\"text\":" + JsonString("关闭") + "}]}";
+}
+
+std::string CivText(std::uint32_t va, int civ);
+
+const char* GovernmentName(int government) {
+  static const char* names[] = {"无政府", "专制", "君主", "共产", "原教旨", "共和", "民主"};
+  if (government < 0 || government >= 7) return "";
+  return names[government];
+}
+
+std::string PediaText(int tech) {
+  std::string out = "允许：";
+  int shown = 0;
+  for (int i = 0; i < 100 && shown < 12; ++i) {
+    auto* rule = Rules() + i;
+    if (!Readable(rule, sizeof(RulesCivilize))) break;
+    if (rule->preq[0] != tech && rule->preq[1] != tech) continue;
+    std::string name = TechName(i);
+    if (name.empty()) continue;
+    if (shown) out += "、";
+    out += name;
+    ++shown;
+  }
+  return shown ? out : std::string{};
+}
+
+int PediaTech() {
+  int page = ReadIntAt(kVaPediaWindow + kPediaPage);
+  if (page >= 0 && page < 256) {
+    int tech = ReadIntAt(kVaPediaWindow + kPediaEntries + static_cast<unsigned>(page) * 4);
+    if (tech >= 0 && tech < 100) return tech;
+  }
+  int item = ReadIntAt(kVaPediaItem);
+  return item >= 0 && item < 100 ? item : -1;
+}
+
+std::string PediaBody(int tech) {
+  auto* rule = Rules() + tech;
+  std::string text;
+  if (Readable(rule, sizeof(RulesCivilize))) {
+    std::string pre;
+    for (int p : {static_cast<int>(rule->preq[0]), static_cast<int>(rule->preq[1])}) {
+      if (p < 0) continue;
+      std::string name = TechName(p);
+      if (name.empty()) continue;
+      if (!pre.empty()) pre += "、";
+      pre += name;
+    }
+    if (!pre.empty()) text = "先决条件：" + pre;
+  }
+  std::string allows = PediaText(tech);
+  if (!allows.empty()) {
+    if (!text.empty()) text += "\n";
+    text += allows;
+  }
+  return text;
+}
+
+std::string PediaJson() {
+  int kind = ReadIntAt(kVaPediaKind);
+  int tech = PediaTech();
+  if ((kind == 1 || kind == 8) && tech >= 0) {
+    std::string title = TechName(tech);
+    if (title.empty()) title = "科技";
+    return CloseOnlyDialog(title, PediaBody(tech));
+  }
+  return CloseOnlyDialog("百科", "");
+}
+
+std::string ViewJson() {
+  int civ = ReadIntAt(kVaIntelCiv);
+  if (civ < 0 || civ >= kCivSlots) return CloseOnlyDialog("窗口", "");
+  auto* head = CivAt(civ);
+  std::string text;
+  std::string name = CivText(kVaCivName, civ);
+  if (!name.empty()) text += name;
+  if (Readable(head, sizeof(CivHead))) {
+    const char* gov = GovernmentName(head->government);
+    if (*gov) {
+      if (!text.empty()) text += "\n";
+      text += gov;
+    }
+    if (!text.empty()) text += "\n";
+    text += "国库：" + std::to_string(head->gold);
+    int units = 0;
+    int cities = 0;
+    auto* game = G();
+    int nu = (std::min)(static_cast<int>(game->total_units), kUnitSlots);
+    int nc = (std::min)(static_cast<int>(game->total_cities), kCitySlots);
+    for (int i = 0; i < nu; ++i)
+      if (Units()[i].id != 0 && Units()[i].civ == civ) ++units;
+    for (int i = 0; i < nc; ++i)
+      if (Cities()[i].id != 0 && Cities()[i].owner == static_cast<std::uint8_t>(civ)) ++cities;
+    text += "\n军事：" + std::to_string(units);
+    text += "\n城市：" + std::to_string(cities);
+    std::string research = TechName(head->researching);
+    if (!research.empty()) text += "\n正在研究：" + research;
+  }
+  return CloseOnlyDialog("外交部·情报报告", text);
+}
+
+std::string ModalScreenJson() {
+  switch (CurrentModal()) {
+    case ModalKind::Pedia:
+      return PediaJson();
+    case ModalKind::View:
+      return ViewJson();
+    case ModalKind::None:
+      return {};
+  }
+  return {};
+}
+
+int SehPediaClose() {
+  __try {
+    GameFn<void(__cdecl*)()>(kVaPediaClose)();
+    return 0;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return 1;
+  }
+}
+
+int SehPediaDismiss() {
+  __try {
+    GameFn<void(__cdecl*)()>(kVaPediaDismiss)();
+    return 0;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return 1;
+  }
+}
+
+int SehViewClose() {
+  __try {
+    GameFn<void(__cdecl*)()>(kVaViewButtonClose)();
+    return 0;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return 1;
+  }
+}
+
+std::string CloseModalScreen(ModalKind kind) {
+  if (kind == ModalKind::Pedia) {
+    if (SehPediaClose()) return ErrJson("game_fault", "关闭科技页时出错");
+    if (auto* stage = At<int>(kVaPediaStage); Readable(stage, sizeof(int))) *stage = 0;
+    if (SehPediaDismiss()) return ErrJson("game_fault", "关闭科技页时出错");
+    return OkJson(std::string("\"index\":0,\"text\":") + JsonString("关闭") + ",\"via\":\"game\",\"changed\":true,\"dialog\":" +
+                  DialogJson());
+  }
+  if (kind == ModalKind::View) {
+    if (SehViewClose()) return ErrJson("game_fault", "关闭情报页时出错");
+    return OkJson(std::string("\"index\":0,\"text\":") + JsonString("关闭") + ",\"via\":\"game\",\"changed\":true,\"dialog\":" +
+                  DialogJson());
+  }
+  return ErrJson("no_dialog", "没有打开的界面");
 }
 
 const char* SehCivText(std::uint32_t va, int civ) {
@@ -1156,7 +1333,14 @@ std::string SetDialogEdits(void* dlg, const std::vector<std::string>& utf8) {
 // confirms.
 std::string ClickMenuOption(int index, const std::string& text, const std::vector<std::string>* edits) {
   void* dlg = DialogPtr();
-  if (!dlg) return ErrJson("no_dialog", "没有打开的界面");
+  if (!dlg) {
+    ModalKind screen = CurrentModal();
+    if (screen == ModalKind::None) return ErrJson("no_dialog", "没有打开的界面");
+    if (edits && !edits->empty()) return ErrJson("illegal", "这个窗口没有输入框");
+    bool close = text.empty() ? index == 0 : text == "关闭";
+    if (!close) return ErrJson("illegal", "这个窗口只有「关闭」");
+    return CloseModalScreen(screen);
+  }
   std::vector<MenuChoice> choices = ChoicesFor(dlg).choices;
   if (!text.empty()) {
     index = -1;
@@ -1954,6 +2138,10 @@ std::string BeginProduce(const ActArgs& a) {
   if (a.city < 0 || a.city >= game->total_cities || Cities()[a.city].id == 0) return ErrJson("illegal", "城市不存在");
   if (Cities()[a.city].owner != Human()) return ErrJson("illegal", "这不是己方城市");
   int open = OpenCityWindow();
+  if (CityWindowLocked() && open < 0 && !GameModalScreenOpen()) {
+    return std::string("{\"ok\":false,\"error\":\"modal_open\",\"reason\":") +
+           JsonString("有一扇还没登记的窗口挡着") + ",\"city_window\":null,\"dialog\":" + DialogJson() + "}";
+  }
   if (CityWindowLocked() && open != a.city) return ErrJson("illegal", "另一座城市的窗口正等着关闭，先 close-city");
   g_pending = {};
   g_pending.kind = PendingKind::Produce;
@@ -2126,6 +2314,13 @@ bool GameInMatch() { return g_hash_ok && g_limits_ok && MatchLive(); }
 
 bool GameDialogOpen() { return DialogPtr() != nullptr; }
 
+bool GameModalScreenOpen() { return CurrentModal() != ModalKind::None; }
+
+bool GameUnregisteredLock() {
+  return MatchLive() && CityWindowLocked() && OpenCityWindow() < 0 && CurrentModal() == ModalKind::None &&
+         DialogPtr() == nullptr;
+}
+
 void GameObserveDialog() {
   void* now = DialogPtr();
   if (now && now != g_last_dialog) {
@@ -2137,6 +2332,15 @@ void GameObserveDialog() {
     g_dialog_announced = false;
     PushEvent("{\"type\":\"dialog_closed\"}");
   }
+  static ModalKind last_screen = ModalKind::None;
+  ModalKind screen = now ? ModalKind::None : CurrentModal();
+  if (screen != last_screen) {
+    if (screen != ModalKind::None && !now)
+      PushEvent(std::string("{\"type\":\"dialog\",\"dialog\":") + DialogJson() + "}");
+    else if (screen == ModalKind::None && last_screen != ModalKind::None && !now)
+      PushEvent("{\"type\":\"dialog_closed\"}");
+    last_screen = screen;
+  }
   void* notice = NoticePtr();
   if (notice && notice != g_last_notice) PushEvent(std::string("{\"type\":\"notice\",\"notice\":") + NoticeJson() + "}");
   g_last_notice = notice;
@@ -2144,8 +2348,11 @@ void GameObserveDialog() {
 
 bool GameTakeModalAbort(std::string& response_json) {
   bool dialog = DialogPtr() != nullptr;
-  bool tax = !dialog && GameTaxWindowOpen();
-  if (!dialog && !tax && !GameCityWindowModal()) return false;
+  bool screen = !dialog && GameModalScreenOpen();
+  bool tax = !dialog && !screen && GameTaxWindowOpen();
+  bool city = !dialog && !screen && !tax && GameCityWindowModal();
+  bool unknown = !dialog && !screen && !tax && !city && GameUnregisteredLock();
+  if (!dialog && !screen && !tax && !city && !unknown) return false;
   std::string turn;
   if (MatchLive()) {
     turn = std::string("\"turn\":") + std::to_string(G()->turn) + ",\"year\":" + std::to_string(GameYear()) + ",";
@@ -2156,8 +2363,10 @@ bool GameTakeModalAbort(std::string& response_json) {
     }
   }
   const char* reason = dialog ? "出现对话框"
-                       : tax  ? "税率窗口打开着，游戏等它关上；用 rates 设好比例并确定"
-                              : "城市窗口打开着，游戏等它关上；用 produce 或 close-city";
+                       : screen ? "画面上有一页窗口，用 respond 关闭"
+                       : tax    ? "税率窗口打开着，游戏等它关上；用 rates 设好比例并确定"
+                       : city   ? "城市窗口打开着，游戏等它关上；用 produce 或 close-city"
+                                : "有一扇还没登记的窗口挡着";
   response_json = std::string("{\"ok\":false,\"error\":\"modal_open\",\"reason\":") + JsonString(reason) + "," + turn +
                   "\"city_window\":" + CityWindowJson() + ",\"tax_window\":" + TaxWindowJson() +
                   ",\"dialog\":" + DialogJson() + "}";
@@ -2206,7 +2415,7 @@ Gate CachedGate() {
 
 std::string GameHelloJson() {
   Gate g = GameGate();
-  return HelloJson(g, g.hash_ok && DialogPtr(), g.in_game ? CityWindowJson() : std::string("null"),
+  return HelloJson(g, g.hash_ok && (DialogPtr() != nullptr || GameModalScreenOpen()), g.in_game ? CityWindowJson() : std::string("null"),
                    g.in_game ? TaxWindowJson() : std::string("null"));
 }
 
@@ -2419,9 +2628,9 @@ std::string GameActJson(const ActArgs& a) {
     return ClickMenuOption(a.option, a.text, a.has_edit ? &a.edits : nullptr);
   }
   if (!RequireMatch(err)) return err;
-  if (DialogPtr()) {
-    return std::string("{\"ok\":false,\"error\":\"modal_open\",\"reason\":\"已有对话框\",") +
-           "\"dialog\":" + DialogJson() + "}";
+  if (DialogPtr() || GameModalScreenOpen() || GameUnregisteredLock()) {
+    std::string held;
+    if (GameTakeModalAbort(held)) return held;
   }
 
   // Game menu items, as a click on them: Windows' file dialog (save, load)
@@ -2516,9 +2725,9 @@ std::string GameActJson(const ActArgs& a) {
 std::string GameBeginEndTurnJson() {
   std::string err;
   if (!RequireMatch(err)) return err;
-  if (DialogPtr()) {
-    return std::string("{\"ok\":false,\"error\":\"modal_open\",\"reason\":\"已有对话框\",") +
-           "\"dialog\":" + DialogJson() + "}";
+  if (DialogPtr() || GameModalScreenOpen() || GameUnregisteredLock()) {
+    std::string held;
+    if (GameTakeModalAbort(held)) return held;
   }
   auto* game = G();
   if (g_turn_inflight && (game->turn != g_inflight_turn || game->year != g_inflight_year)) {
@@ -2577,7 +2786,7 @@ std::string GamePollPending(int depth) {
     return {};
   }
   auto* game = G();
-  if (g_pending.kind == PendingKind::EndTurn && !DialogPtr()) {
+  if (g_pending.kind == PendingKind::EndTurn && !DialogPtr() && !GameModalScreenOpen() && !GameUnregisteredLock()) {
     bool advanced = game->turn != g_pending.turn || game->year != g_pending.year;
     if (advanced && depth == 1) {
       g_pending = {};

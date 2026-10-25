@@ -1,6 +1,6 @@
 # civ2agent 命令行接口
 
-日期：2026-10-24，协议 3
+日期：2026-10-25，协议 3
 
 agent 通过 `cli/civ2ctl.py` 观察和操作《文明 II》。注入游戏的 `civ2agent.dll` 在游戏的界面线程执行命令，命令行经命名管道 `\\.\pipe\civ2agent` 和它通信。agent 只调用命令行，不读进程内存，也不直接连管道。
 
@@ -75,6 +75,8 @@ python civ2agent\cli\civ2ctl.py tools
 有对话框时发出的其他操作立即返回 `modal_open` 和 `dialog`，不会执行，也不会替你回答。先用 `respond` 回答。
 
 游戏有时自己打开城市窗口，并停下来等它关上（建城、攻下城市、回合结束时的报告）。这时 `city_window.modal` 为 true，除 `produce`（只能是这座城市）和 `close-city` 外的操作都返回 `modal_open`，带 `city_window`。和玩家一样，改完生产或看完后 `close-city`，游戏接着往下走。税率窗口同理，见 `rates`。
+
+科技完成之后的发现页（标题是科技名，正文是这项允许的后续科技，按钮「关闭」）和外交部情报页（标题「外交部·情报报告」，正文有政体、国库、军事、城市和对方正在研究的项目，按钮「关闭」）也是 `dialog`，`via` 为 `game`。用 `respond --text 关闭` 或 `respond --option 0` 关掉，效果和玩家点「关闭」一样。`city_window` 为 null 而操作返回 `modal_open`、原因是「有一扇还没登记的窗口挡着」时，画面上还有一页没有登记的窗口；记下 `dialog` 的标题后停下，不要改进程内存。
 
 ## 局面
 

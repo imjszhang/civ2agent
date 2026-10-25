@@ -69,6 +69,20 @@ class RequestMapping(unittest.TestCase):
         self.assertEqual(build(["state", "--out", "s.json"]), {"op": "snapshot"})
         self.assertEqual(build(["state", "--only", "civ,units"]), {"op": "snapshot"})
 
+    def test_overwrite_confirm_uses_the_caption_when_the_button_id_is_zero(self):
+        dialog = {"via": "windows", "kind": "message", "options": [
+            {"index": 0, "text": "是(Y)", "button": 0},
+            {"index": 1, "text": "否(N)", "button": 0},
+        ]}
+        self.assertEqual(civ2ctl.overwrite_choice(dialog, True)["index"], 0)
+        self.assertEqual(civ2ctl.overwrite_choice(dialog, False)["index"], 1)
+        numbered = {"options": [
+            {"index": 0, "text": "Yes", "button": 6},
+            {"index": 1, "text": "No", "button": 7},
+        ]}
+        self.assertEqual(civ2ctl.overwrite_choice(numbered, True)["button"], 6)
+        self.assertIsNone(civ2ctl.overwrite_choice({"options": []}, True))
+
     def test_state_only_keeps_the_named_parts(self):
         args = civ2ctl.build_parser().parse_args(["state", "--only", "civ"])
         full = {"ok": True, "in_game": True, "turn": 3, "year": -3900, "civ": {"gold": 5}, "units": [1], "tiles": [2]}

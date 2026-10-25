@@ -48,6 +48,10 @@ bool GameCityWindowModal();
 bool GameTaxWindowOpen();
 // A window (not a dialog) holds the game until the player closes it.
 bool GameWindowModal();
+// A civilopedia page or the foreign-ministry viewer is up.
+bool GameModalScreenOpen();
+// The city-window lock is set, but no city window and no known page is open.
+bool GameUnregisteredLock();
 
 std::string GameHelloJson();
 std::string GameMenuJson();

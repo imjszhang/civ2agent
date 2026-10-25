@@ -1,7 +1,7 @@
 {
   "name": "civ2agent-dashboard",
   "private": true,
-  "description": "Read-only local page for a running civ2agent game and the agent playing it.",
+  "description": "Local page and LAN MCP gateway for a civ2agent game.",
   "type": "module",
   "engines": {
     "node": ">=20"
@@ -14,5 +14,9 @@
     "@types/node": "^24.10.1",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^4.6.7"
   }
 }

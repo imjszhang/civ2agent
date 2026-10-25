@@ -1,4 +1,5 @@
 const link = document.querySelector("#link");
+const gateway = document.querySelector("#gateway");
 const game = document.querySelector("#game");
 const runBox = document.querySelector("#run");
 const prompt = document.querySelector("#prompt");
@@ -6,7 +7,7 @@ const thoughts = document.querySelector("#thoughts");
 const actions = document.querySelector("#actions");
 const commands = document.querySelector("#commands");
 
-const state = { game: null, session: null, run: null, earlier: null, prompt: "", thoughts: [], actions: [], commands: [] };
+const state = { game: null, gateway: null, session: null, run: null, earlier: null, prompt: "", thoughts: [], actions: [], commands: [] };
 
 const STATUS = { running: "进行中", completed: "已完成", failed: "失败", cancelled: "已取消", timed_out: "超时" };
 const EFFORT = { none: "无", minimal: "最低", low: "低", medium: "中", high: "高", xhigh: "很高", max: "最大", ultra: "极高" };
@@ -37,6 +38,25 @@ function table(headers, records, pick) {
   el.append(head);
   for (const record of records) el.append(row(pick(record)));
   return el;
+}
+
+function renderGateway() {
+  gateway.replaceChildren();
+  const view = state.gateway;
+  if (!view) return;
+  const lines = [
+    view.lan ? "局域网已开放" : "仅本机",
+    view.holder ? `持有者 ${view.holder}` : "无人持有租约",
+  ];
+  if (view.command) lines.push(`远程操作进行中：${view.command}${view.since ? "　自 " + view.since.slice(11, 19) : ""}`);
+  else lines.push("空闲");
+  if (view.last) lines.push(`最近 ${view.last.command}${view.last.ok ? " 完成" : "　" + (view.last.reason || "失败")}`);
+  for (const text of lines) {
+    const line = document.createElement("p");
+    if (view.command && text.startsWith("远程操作进行中")) line.className = "busy";
+    line.textContent = text;
+    gateway.append(line);
+  }
 }
 
 function renderGame() {
@@ -180,6 +200,7 @@ function renderCommands() {
 }
 
 function renderAll() {
+  renderGateway();
   renderGame();
   renderRun();
   prompt.textContent = state.prompt;
@@ -203,6 +224,7 @@ source.addEventListener("snapshot", event => {
   Object.assign(state, JSON.parse(event.data));
   renderAll();
 });
+source.addEventListener("gateway", event => { state.gateway = JSON.parse(event.data); renderGateway(); });
 source.addEventListener("game", event => { state.game = JSON.parse(event.data); renderGame(); });
 source.addEventListener("session", event => { state.session = JSON.parse(event.data); renderRun(); });
 source.addEventListener("run", event => { state.run = JSON.parse(event.data); renderRun(); });

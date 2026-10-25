@@ -227,6 +227,37 @@ python civ2agent\cli\civ2session.py list
 - 同时只有一局在进行（`games/.active`）。别的局在进行时 `new`、`setup`、`resume` 拒绝；游戏里正在进行的不是这局时，`close` 既不存它也不退出它。
 - agent 只通过 `civ2ctl.py` 看局面，不读 .SAV 的内容。
 
+## 局域网网关
+
+`dashboard` 在观察页之外提供 MCP（Streamable HTTP），路径 `/mcp`。局域网里的 agent 用它开局、续玩、存盘、收尾，以及代打。游戏规则仍由 `civ2session.py` 和 `civ2ctl.py` 执行，网关只串行转发。
+
+```text
+cd civ2agent\dashboard
+npm start
+```
+
+地址是 `http://<这台机器的局域网地址>:4732/mcp`，端口用 `DASHBOARD_PORT`（默认 4732）。请求带 `Authorization: Bearer 令牌`。默认只听 `127.0.0.1`。要对局域网开放，把 `DASHBOARD_HOST` 设为 `0.0.0.0`，同时设置 `DASHBOARD_TOKEN`；没有令牌时进程不启动。只听本机且没有令牌时，本机客户端免令牌。防火墙要由这台机器自己放行该端口。
+
+同一时刻只有一局、一条变更。先 `claim`（参数 `client` 是调用方的名字，显示在观察页上）取得 `lease`。开局、续玩、存盘、收尾和代打都要带上它；`release` 交回。没有命令在跑、空闲超过 10 分钟（`GATE_LEASE_IDLE_MS`）时租约自动放开。第二条变更立刻返回 `busy`，说明是谁在做什么，不排队。
+
+管理工具：
+
+- `list_games`、`game_status`、`read_game`：不需要租约。`read_game` 是观察页内存里的局面（连接、回合、年份、文明、对话框、城市窗口、税率窗口），不连管道。`game_status` 和 `resume_game` 的 `id` 只能是 `games/` 下的一层目录名。
+- `start_game`：`lease` 和 `spec`（对象，键与上面的 spec.json 相同），可选 `title`、`request`、`id`。交给 `civ2session.py new --spec`，可能要数分钟，开始时发一条进度「正在开局」。
+- `resume_game`、`checkpoint`、`close_game`：`close_game` 的 `status` 为 `paused` 或 `ended`，可选 `keep_running`。
+
+代打工具来自 `civ2ctl.py tools`，启动网关时注册：
+
+- `status`、`state`、`dialog` 不需要租约。锁被占用时不另发命令，返回 `busy` 和上一份快照。`state` 的 `tiles` 很大，说明与命令行相同。
+- `events` 以及 `respond`、`activate`、`move`、`goto`、`order`、`found-city`、`produce`、`close-city`、`rates`、`end-turn` 需要租约。
+- `respond` 的部分对话框会移动运行网关的这台机器的鼠标。操作期间游戏窗口留在屏幕上，不要动鼠标。
+
+不在 MCP 里：`save-game`、`load-game`、`quit-game`、`wait-ready`、`skip-intro`，以及 `civ2session.py` 的 `context`、`record-run`。存档、读档和退出只走 `checkpoint`、`resume_game`、`close_game`。
+
+每个工具的返回内容是命令行的那一行 JSON。`ok` 不为 true 时，MCP 结果标为错误。
+
+管道没有身份校验。开着这个网关时，本机上的 agent 也走 `/mcp`，不要再直接调用 `civ2ctl.py`，否则会和远程调用同时写管道。
+
 ## 让 agent 玩
 
 `runner/civ2-play.mjs` 用 [js-agent-runtime](https://github.com/imjszhang/js-agent-runtime) 启动一个 agent 命令行来玩游戏局，可以选 Codex、Claude Code、DeepSeek Harness、OpenCode 或 Cursor Agent。agent 和人一样只用 `civ2ctl.py`、`civ2session.py`。

@@ -174,9 +174,16 @@ bool ReadSysDialog(SysDialog& out) {
 
 }  // namespace
 
+bool DialogUnready(const SysDialog& d) { return !d.file && d.buttons.empty(); }
+
+bool SysDialogUnready() {
+  SysDialog d;
+  return ReadSysDialog(d) && DialogUnready(d);
+}
+
 std::string SysDialogJson() {
   SysDialog d;
-  if (!ReadSysDialog(d)) return {};
+  if (!ReadSysDialog(d) || DialogUnready(d)) return {};
   std::string out = "{\"title\":" + JsonString(d.title) + ",\"text\":" + JsonString(d.message) +
                     ",\"kind\":" + JsonString(d.file ? "file" : "message") + ",\"via\":\"windows\"";
   if (d.file) out += ",\"file\":" + JsonString(Utf8(Text(d.name_box)));

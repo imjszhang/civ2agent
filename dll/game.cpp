@@ -52,7 +52,7 @@ FnGetSq g_square = nullptr;
 FnStr g_string = nullptr;
 FnYear g_year_fn = nullptr;
 
-enum class PendingKind { None, EndTurn, FoundCity, Move, Goto, Order, SkipIntro, Produce, Rates };
+enum class PendingKind { None, EndTurn, FoundCity, Move, Goto, Order, SkipIntro, Produce, Rates, Revolt };
 
 struct Pending {
   PendingKind kind = PendingKind::None;
@@ -466,6 +466,59 @@ int PediaTech() {
   return item >= 0 && item < 100 ? item : -1;
 }
 
+// The id on the page, including an improvement or wonder (those are not tech ids).
+int PediaItemId() {
+  int page = ReadIntAt(kVaPediaWindow + kPediaPage);
+  if (page >= 0 && page < 256) {
+    int id = ReadIntAt(kVaPediaWindow + kPediaEntries + static_cast<unsigned>(page) * 4);
+    if (id >= 0 && id < 512) return id;
+  }
+  int item = ReadIntAt(kVaPediaItem);
+  return item >= 0 && item < 512 ? item : -1;
+}
+
+const char* ImprovementRaw(int index) {
+  if (index < 0 || index > 66) return nullptr;
+  auto* entry = At<std::uint32_t>(kVaImprovements) + index * 2;
+  if (!Readable(entry, 4)) return nullptr;
+  return SehString(static_cast<int>(*entry));
+}
+
+// The paragraph under "@@名字" in Describe.txt, which is the text this page draws.
+std::string DescribeBody(const char* name) {
+  if (!name || !name[0]) return {};
+  char path[MAX_PATH] = {};
+  if (!GetModuleFileNameA(nullptr, path, MAX_PATH)) return {};
+  char* slash = std::strrchr(path, '\\');
+  if (!slash || slash - path + 14 >= MAX_PATH) return {};
+  std::memcpy(slash + 1, "Describe.txt", 13);
+  HANDLE file = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return {};
+  std::string data;
+  char chunk[4096];
+  DWORD got = 0;
+  while (ReadFile(file, chunk, sizeof(chunk), &got, nullptr) && got) data.append(chunk, chunk + got);
+  CloseHandle(file);
+  const std::string key = std::string("@@") + name;
+  auto pos = data.find(key);
+  if (pos == std::string::npos) return {};
+  pos += key.size();
+  if (pos < data.size() && (data[pos] == ' ' || data[pos] == '\t')) {
+    while (pos < data.size() && (data[pos] == ' ' || data[pos] == '\t')) ++pos;
+  }
+  if (pos >= data.size() || (data[pos] != '\r' && data[pos] != '\n')) return {};
+  if (data[pos] == '\r') ++pos;
+  if (pos < data.size() && data[pos] == '\n') ++pos;
+  std::string raw;
+  while (pos < data.size() && raw.size() < 480) {
+    if (data[pos] == '@' && pos + 1 < data.size() && data[pos + 1] == '@') break;
+    raw.push_back(data[pos]);
+    ++pos;
+  }
+  while (!raw.empty() && (raw.back() == '\r' || raw.back() == '\n' || raw.back() == ' ')) raw.pop_back();
+  return raw.empty() ? std::string{} : ReadGameText(raw.c_str(), static_cast<int>(raw.size()));
+}
+
 std::string PediaBody(int tech) {
   auto* rule = Rules() + tech;
   std::string text;
@@ -496,7 +549,20 @@ std::string PediaJson() {
     if (title.empty()) title = "科技";
     return CloseOnlyDialog(title, PediaBody(tech));
   }
-  return CloseOnlyDialog("百科", "");
+  // Improvements and wonders share one table (wonder 0 is improvement 39).
+  // The production list opens that page with the improvement index, or the
+  // production record id (0x3E + index). Units use the unit-type table.
+  int id = PediaItemId();
+  int impr = id;
+  if (id >= kProductionImprovementBase) impr = id - kProductionImprovementBase;
+  const char* raw = ImprovementRaw(impr);
+  if (!raw && id >= 0 && id < 62) {
+    auto* type = Types() + id;
+    if (Readable(type, sizeof(UnitType))) raw = SehString(type->string_index);
+  }
+  std::string title = ReadGameText(raw, 60);
+  if (title.empty()) return CloseOnlyDialog("百科", "");
+  return CloseOnlyDialog(title, DescribeBody(raw));
 }
 
 std::string ViewJson() {
@@ -1510,6 +1576,36 @@ MenuCommand FindCommand(const wchar_t* shortcut) {
   return found;
 }
 
+// A menu item whose caption starts with prefix, ignoring the shortcut after the tab.
+// Kingdom is not Win32 submenu 2; tax rate uses that number only as MenuExec's menu.
+MenuCommand FindCaption(const wchar_t* prefix) {
+  MenuCommand found;
+  HWND main = MainWindow();
+  HMENU bar = main ? GetMenu(main) : nullptr;
+  if (!bar || !prefix) return found;
+  size_t n = wcslen(prefix);
+  int top = GetMenuItemCount(bar);
+  for (int i = 0; i < top; ++i) {
+    HMENU sub = GetSubMenu(bar, i);
+    if (!sub) continue;
+    int count = GetMenuItemCount(sub);
+    for (int j = 0; j < count; ++j) {
+      wchar_t caption[128] = {};
+      if (!GetMenuStringW(sub, j, caption, 128, MF_BYPOSITION)) continue;
+      const wchar_t* tab = wcschr(caption, L'\t');
+      size_t len = tab ? static_cast<size_t>(tab - caption) : wcslen(caption);
+      if (len < n || wcsncmp(caption, prefix, n) != 0) continue;
+      UINT id = GetMenuItemID(sub, j);
+      if (id == 0 || id == static_cast<UINT>(-1)) continue;
+      found.id = id;
+      UINT state = GetMenuState(sub, j, MF_BYPOSITION);
+      found.enabled = (state & (MF_GRAYED | MF_DISABLED)) == 0;
+      return found;
+    }
+  }
+  return found;
+}
+
 const wchar_t* OrderShortcut(const std::string& order) {
   if (order == "fortify") return L"f";
   if (order == "sleep") return L"s";
@@ -1810,12 +1906,18 @@ const char* TreatyStatus(std::int32_t t) {
 
 // The city window as the player sees it: which city is open (-1 for none),
 // and whether the game holds the turn until it is closed.
+int CityWindowIndex() {
+  auto* win = At<char>(kVaCityWindow);
+  if (!Readable(win + kCityWinCityIndex, sizeof(int))) return -1;
+  int city = *reinterpret_cast<int*>(win + kCityWinCityIndex);
+  return city >= 0 && city < kCitySlots ? city : -1;
+}
+
 int OpenCityWindow() {
   auto* win = At<char>(kVaCityWindow);
   if (!Readable(win + kCityWinHidden, sizeof(int))) return -1;
   if (*reinterpret_cast<int*>(win + kCityWinHidden)) return -1;
-  int city = *reinterpret_cast<int*>(win + kCityWinCityIndex);
-  return city >= 0 && city < kCitySlots ? city : -1;
+  return CityWindowIndex();
 }
 
 bool CityWindowLocked() {
@@ -1823,8 +1925,18 @@ bool CityWindowLocked() {
   return Readable(lock, sizeof(int)) && *lock != 0;
 }
 
+// Founding a city sets the lock, then shows the window. For a moment the
+// hidden flag is still set while the lock is the city window's own wait.
+// The city index is already the new city. That is not some other page.
+int LockedCityWindow() {
+  if (!CityWindowLocked()) return -1;
+  int shown = OpenCityWindow();
+  return shown >= 0 ? shown : CityWindowIndex();
+}
+
 std::string CityWindowJson() {
   int city = OpenCityWindow();
+  if (city < 0) city = LockedCityWindow();
   if (city < 0) return "null";
   return std::string("{\"city\":") + std::to_string(city) + ",\"name\":" + JsonString(CityName(Cities()[city])) +
          ",\"modal\":" + (CityWindowLocked() ? "true" : "false") + "}";
@@ -2138,10 +2250,15 @@ std::string BeginProduce(const ActArgs& a) {
   if (a.city < 0 || a.city >= game->total_cities || Cities()[a.city].id == 0) return ErrJson("illegal", "城市不存在");
   if (Cities()[a.city].owner != Human()) return ErrJson("illegal", "这不是己方城市");
   int open = OpenCityWindow();
-  if (CityWindowLocked() && open < 0 && !GameModalScreenOpen()) {
+  int locked = LockedCityWindow();
+  if (CityWindowLocked() && locked < 0 && !GameModalScreenOpen()) {
     return std::string("{\"ok\":false,\"error\":\"modal_open\",\"reason\":") +
            JsonString("有一扇还没登记的窗口挡着") + ",\"city_window\":null,\"dialog\":" + DialogJson() + "}";
   }
+  if (CityWindowLocked() && open < 0)
+    return std::string("{\"ok\":false,\"error\":\"modal_open\",\"reason\":") +
+           JsonString("城市窗口打开着，游戏等它关上；用 produce 或 close-city") + ",\"city_window\":" + CityWindowJson() +
+           ",\"dialog\":" + DialogJson() + "}";
   if (CityWindowLocked() && open != a.city) return ErrJson("illegal", "另一座城市的窗口正等着关闭，先 close-city");
   g_pending = {};
   g_pending.kind = PendingKind::Produce;
@@ -2193,16 +2310,18 @@ std::string PollProduce() {
       break;
     }
     case ProduceStage::Picking: {
+      if (GameModalScreenOpen()) return HandOffProduce();
       if (!dlg) break;
       if (!IsProductionList(dlg, g_produce.city)) return HandOffProduce();
       DialogChoices listed = ChoicesFor(dlg);
       std::vector<MenuChoice>& choices = listed.choices;
-      int target = -1, cancel = -1, ok = -1;
+      int target = -1, cancel = -1, ok = -1, help = -1;
       for (size_t i = 0; i < choices.size(); ++i) {
         const MenuChoice& c = choices[i];
         if (c.answer == Answer::Button) {
           if (c.std_type == kStdButtonCancel || (cancel < 0 && c.text == "取消")) cancel = static_cast<int>(i);
           if (c.std_type == kStdButtonOk || (ok < 0 && c.text == "确定")) ok = static_cast<int>(i);
+          if (c.text == "说明") help = static_cast<int>(i);
           continue;
         }
         bool hit = g_produce.item_id >= 0 ? c.list_id == g_produce.item_id
@@ -2215,7 +2334,11 @@ std::string PollProduce() {
       const City& city = Cities()[g_produce.city];
       bool looking = g_produce.item.empty() && g_produce.item_id < 0;
       int pick = -1;
-      if (target >= 0 && BuildingOfRecord(choices[target].list_id) != city.building) {
+      // The list's 说明 button opens the encyclopedia for the highlighted row.
+      if (g_produce.item == "说明" && help >= 0) {
+        pick = help;
+        g_produce.answer = "";
+      } else if (target >= 0 && BuildingOfRecord(choices[target].list_id) != city.building) {
         pick = target;
       } else {
         // Leave the production as it is. This list has no Cancel in some
@@ -2244,6 +2367,8 @@ std::string PollProduce() {
       break;
     }
     case ProduceStage::Picked:
+      // 说明 opens the encyclopedia on top of the list and returns.
+      if (GameModalScreenOpen()) return HandOffProduce();
       // The list is closing; a different popup now is the game's confirmation.
       if (dlg && dlg != g_produce.list) return HandOffProduce();
       break;
@@ -2317,7 +2442,7 @@ bool GameDialogOpen() { return DialogPtr() != nullptr; }
 bool GameModalScreenOpen() { return CurrentModal() != ModalKind::None; }
 
 bool GameUnregisteredLock() {
-  return MatchLive() && CityWindowLocked() && OpenCityWindow() < 0 && CurrentModal() == ModalKind::None &&
+  return MatchLive() && CityWindowLocked() && LockedCityWindow() < 0 && CurrentModal() == ModalKind::None &&
          DialogPtr() == nullptr;
 }
 
@@ -2613,6 +2738,26 @@ std::string GameEventsJson() {
   return OkJson(out);
 }
 
+// Kingdom > 革命. The confirm dialog is the game's; this returns as soon as
+// that dialog is up (the dispatch hook answers the act with modal_open).
+std::string BeginRevolt() {
+  if (!HumansTurn()) return ErrJson("not_your_turn", "当前不是人类玩家的行动阶段");
+  MenuCommand cmd = FindCaption(L"革命");
+  if (!cmd.id) return ErrJson("illegal", "王国菜单里没有革命");
+  if (!cmd.enabled) return ErrJson("illegal", "现在不能革命");
+  HWND main = MainWindow();
+  if (!main) return ErrJson("game_fault", "找不到游戏窗口");
+  auto* civ = CivAt(Human());
+  g_pending = {};
+  g_pending.kind = PendingKind::Revolt;
+  g_pending.orders = Readable(civ, sizeof(CivHead)) ? civ->government : -1;
+  g_pending.posted = GetTickCount();
+  // The same click the menu itself sends. MenuExec's menu number is not the
+  // Win32 submenu index, so the item id from the live menu is what gets posted.
+  PostMessageA(main, WM_COMMAND, cmd.id, 0);
+  return {};
+}
+
 std::string GameActJson(const ActArgs& a) {
   std::string err;
   const std::string& name = a.name;
@@ -2711,11 +2856,14 @@ std::string GameActJson(const ActArgs& a) {
   if (name == "produce") return BeginProduce(a);
 
   if (name == "close_city") {
-    // The city window's Exit button.
-    if (OpenCityWindow() < 0) return ErrJson("illegal", "没有打开的城市窗口");
+    // The city window's Exit button. A locked window whose hidden flag has
+    // not been cleared yet is still that window.
+    if (OpenCityWindow() < 0 && LockedCityWindow() < 0) return ErrJson("illegal", "没有打开的城市窗口");
     if (SehCityWindowExit()) return ErrJson("game_fault", "关闭城市窗口时出错");
     return OkJson("");
   }
+
+  if (name == "revolt") return BeginRevolt();
 
   if (name == "rates") return BeginRates(a);
 
@@ -2730,8 +2878,12 @@ std::string GameBeginEndTurnJson() {
     if (GameTakeModalAbort(held)) return held;
   }
   auto* game = G();
+  // The news dialog closed and the human turn has already started. Posting
+  // 结束全部回合 again would skip that turn, because sleeping units end it
+  // at once. Hand the new turn back instead.
   if (g_turn_inflight && (game->turn != g_inflight_turn || game->year != g_inflight_year)) {
     g_turn_inflight = false;
+    return TurnJson();
   }
   if (g_turn_inflight) {
     g_pending = {};
@@ -2769,6 +2921,26 @@ bool GamePendingActive() { return g_pending.kind != PendingKind::None; }
 
 std::string GamePollPending(int depth) {
   if (g_pending.kind == PendingKind::None) return {};
+  if (g_pending.kind == PendingKind::Revolt) {
+    if (DialogPtr() || GameModalScreenOpen() || GameUnregisteredLock()) {
+      g_pending = {};
+      std::string held;
+      if (GameTakeModalAbort(held)) return held;
+      return ErrJson("modal_open", "出现对话框");
+    }
+    auto* civ = CivAt(Human());
+    int government = Readable(civ, sizeof(CivHead)) ? civ->government : -1;
+    if (government != g_pending.orders) {
+      g_pending = {};
+      return OkJson(std::string("\"government\":") + std::to_string(government));
+    }
+    if (GetTickCount() - g_pending.posted > 1500) {
+      g_pending = {};
+      return ErrJson("game_fault", "革命没有打开确认框");
+    }
+    KeepPumping(GetTickCount());
+    return {};
+  }
   // Step through the city window, the tax window and their own loops, at any depth.
   if (g_pending.kind == PendingKind::Produce) return PollProduce();
   if (g_pending.kind == PendingKind::Rates) return PollRates();
@@ -2865,7 +3037,7 @@ bool GameWindowModal() { return GameCityWindowModal() || GameTaxWindowOpen(); }
 
 bool GameCityWindowOpen() { return g_hash_ok && MatchLive() && OpenCityWindow() >= 0; }
 
-bool GameCityWindowModal() { return GameCityWindowOpen() && CityWindowLocked(); }
+bool GameCityWindowModal() { return LockedCityWindow() >= 0; }
 
 // Civ2UIA's wait (MsgWaitForMultipleObjectsEx, QS_ALLINPUT, at most a few
 // ms) wakes on any message, so the caller's WM_NULL is enough everywhere.

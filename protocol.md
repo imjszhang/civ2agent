@@ -47,7 +47,7 @@ python civ2agent\cli\civ2ctl.py tools
 - `order --unit N --order O`：单位菜单里的命令，`O` 为 `fortify`、`sleep`、`wait`、`skip`、`irrigate`、`road`、`mine`、`clean`。菜单里没有或是灰的就返回 `illegal`。
 - `found-city --unit N`：用拓荒者或工程师建城，相当于点「建立新城市」。随后弹出的命名框用 `respond --text 确定`（可加 `--edit 城市名`）回答。
 - `produce --city N`，可加 `--item 名字` 或 `--item-id ID`：改城市的生产，步骤和玩家一样：打开城市窗口，按「更改」，从游戏给的列表里选，再关上窗口（窗口本来就开着时不关）。
-  - 不给 `--item` 和 `--item-id` 时只看列表：按取消，不改生产，返回 `options`。每项有 `id`、`building`（与城市的 `building` 同一编号）、`name`、`text`（列表里显示的整行，含造价和回合数）。
+  - 不给 `--item` 和 `--item-id` 时只看列表：按取消，不改生产，返回 `options`。每项有 `id`、`building`（与城市的 `building` 同一编号）、`name`、`text`（列表里显示的整行，含造价和回合数）。`--item 说明` 点列表上的「说明」，打开高亮项的百科，返回 `modal_open`。
   - 成功时返回 `building`、`building_name`、`shields`、`changed`。要造的就是现在在造的，`changed` 为 false。
   - 列表里没有这一项时按取消，返回 `illegal` 和 `options`。
   - 能不能造、换生产要不要扣盾，都由游戏决定。在单位、建筑、奇迹之间换类别且已有盾时，游戏弹出「文明规则: 改变生产品」（损失 50% 的盾），这时返回 `modal_open` 和 `dialog`，城市窗口留着不关。对话框里有两行可选：「不改变……的制造」和「损失50％的原料来生产……」，用 `respond --text` 选一行（只按「确定」等于选高亮的那行），然后 `close-city`。
@@ -58,9 +58,10 @@ python civ2agent\cli\civ2ctl.py tools
   - 锁定的滑块可能让某组比例设不出来，这时拖回原来的比例再确定，返回 `illegal`。
   - 窗口没有取消：确定、回车和 Esc 都保留窗口里的比例。游戏开局的前几个回合，确定会写一次 CIV2.DAT。
   - 游戏自己打开税率窗口时（换政体后比例超限），`tax_window` 不为 null，其他操作返回 `modal_open`；用 `rates` 设好并确定，游戏接着往下走。
-- `end-turn`，可加 `--timeout-ms MS`（默认 120000）：结束回合，等到再次轮到玩家。中途出现对话框时返回 `modal_open`，带 `turn` 和 `turn_ended`。`turn_ended` 为 false 时回合还没结束，回答对话框后再发一次 `end-turn`；为 true 时已经是新回合，回答后直接操作，不要再发 `end-turn`，否则会把新回合也结束掉。
+- `revolt`：发动革命，点「王国」菜单的「革命」。菜单是灰的（无政府，或现在不能革命）返回 `illegal`。确认框不代答，返回 `modal_open`，用 `respond` 选。之后的无政府和「选择政府型态」仍是对话框。
+- `end-turn`，可加 `--timeout-ms MS`（默认 120000）：结束回合，等到再次轮到玩家。中途出现对话框时返回 `modal_open`，带 `turn` 和 `turn_ended`。`turn_ended` 为 false 时回合还没结束，回答对话框后再发一次 `end-turn`。关掉回合间的消息后再发的这一次，如果回合已经增加，就返回这一回合，不再结束它。`turn_ended` 为 true 时已经是新回合，回答后直接操作。
 
-- `save-game --file 路径`，可加 `--overwrite`：存档。点「游戏」菜单的「储存游戏」，在 Windows 文件对话框里填文件名（绝对路径，扩展名 .SAV），按保存，再关掉游戏的「存档完毕!」。成功时返回 `file`、`bytes`。文件已存在时不加 `--overwrite` 就返回 `illegal`；加了，Windows 问是否替换时回答「是」。
+- `save-game --file 路径`，可加 `--overwrite`：存档。点「游戏」菜单的「储存游戏」，在 Windows 文件对话框里填文件名（绝对路径，扩展名 .SAV），按保存，再关掉游戏的「存档完毕!」，等到这张消息不在了才返回。成功时返回 `file`、`bytes`。文件已存在时不加 `--overwrite` 就返回 `illegal`；加了，Windows 问是否替换时回答「是」。
 - `load-game --file 路径`：读档。对局中点「游戏」菜单的「载入游戏」，在主菜单选「读取进度」；填文件名，按打开，再关掉游戏的读档消息（标题「困难程度: ...」）。成功时返回 `turn`、`year`、`civ`、`leader`。
 - `quit-game`，可加 `--exit`：点「游戏」菜单的「离开游戏」，在「确认」里选「是」，回到主菜单；`--exit` 再在主菜单按取消，游戏程序退出。
 - 游戏局（见「游戏局」）进行中，`load-game` 和 `quit-game` 返回 `session_policy`，`save-game` 只能存到这局的 `saves/`（可以只给文件名）。读档、离开和收尾由 `civ2session.py` 负责。
@@ -76,7 +77,7 @@ python civ2agent\cli\civ2ctl.py tools
 
 游戏有时自己打开城市窗口，并停下来等它关上（建城、攻下城市、回合结束时的报告）。这时 `city_window.modal` 为 true，除 `produce`（只能是这座城市）和 `close-city` 外的操作都返回 `modal_open`，带 `city_window`。和玩家一样，改完生产或看完后 `close-city`，游戏接着往下走。税率窗口同理，见 `rates`。
 
-科技完成之后的发现页（标题是科技名，正文是这项允许的后续科技，按钮「关闭」）和外交部情报页（标题「外交部·情报报告」，正文有政体、国库、军事、城市和对方正在研究的项目，按钮「关闭」）也是 `dialog`，`via` 为 `game`。用 `respond --text 关闭` 或 `respond --option 0` 关掉，效果和玩家点「关闭」一样。`city_window` 为 null 而操作返回 `modal_open`、原因是「有一扇还没登记的窗口挡着」时，画面上还有一页没有登记的窗口；记下 `dialog` 的标题后停下，不要改进程内存。
+科技完成之后的发现页（标题是科技名，正文是这项允许的后续科技，按钮「关闭」）、生产列表里打开的百科（标题是项目名，正文是这项的百科说明，按钮「关闭」）和外交部情报页（标题「外交部·情报报告」，正文有政体、国库、军事、城市和对方正在研究的项目，按钮「关闭」）也是 `dialog`，`via` 为 `game`。用 `respond --text 关闭` 或 `respond --option 0` 关掉，效果和玩家点「关闭」一样。`city_window` 为 null 而操作返回 `modal_open`、原因是「有一扇还没登记的窗口挡着」时，画面上还有一页没有登记的窗口；记下 `dialog` 的标题后停下，不要改进程内存。
 
 ## 局面
 
@@ -121,7 +122,7 @@ python civ2agent\cli\civ2ctl.py tools
 
 存档和读档时，游戏打开的是 Windows 自己的文件对话框；替换已有文件时 Windows 还会弹出一个问题框。它们的 `via` 为 `windows`：
 
-- `kind`：`file`（有文件名框，`file` 是框里现在的文字）或 `message`（只有文字和按钮，`text` 是问题）。
+- `kind`：`file`（有文件名框，`file` 是框里现在的文字）或 `message`（只有文字和按钮，`text` 是问题）。还没有按钮、也没有文件名框时，不当成要回答的对话框，返回 `modal_open`，原因是窗口还没准备好，再读一次。不猜按钮。
 - `options`：按钮，从左到右，`button` 是 Windows 的按钮编号，任何语言下都一样（1 确定、保存或打开，2 取消，6 是，7 否）。
 
 这种对话框开着时，游戏线程在 Windows 的对话框里等，`status` 的 `dialog_open` 为 true，`dialog` 返回它，其他命令立即返回 `modal_open`。用 `respond` 回答：`--file` 填文件名（游戏最多收 255 字节，只能有游戏代码页里的字符），`--option` 或 `--text` 按按钮。命令行通过窗口消息填字和按按钮，效果和玩家打字、点击一样。

@@ -317,6 +317,38 @@ constexpr std::uint32_t kVaCityChange = 0x004021D5;      // cdecl (unused): the 
 constexpr std::uint32_t kVaCityWindowExit = 0x004034E5;  // cdecl (): the Exit button
 constexpr std::uint32_t kVaImprovements = 0x0064C488;    // 67 x 8 bytes, string index at +0
 
+// Civilopedia, including the advance page opened after "科技进展".
+// State machine 0x4F5F23 (thunk 0x40196F). Stage 0x6A6784 is 0 on the list,
+// 1 on the detail page, 2 on the description. Live 0x6A678C is 1 while the
+// window's document is up. Close is 0x4F5DD1 (thunk 0x401DCF): it raises the
+// done flag 0x6A677C, and 0x4F8D04 then drops the document.
+constexpr std::uint32_t kVaPediaStage = 0x006A6784;
+constexpr std::uint32_t kVaPediaKind = 0x006A6780;   // 1 and 8 are advances
+constexpr std::uint32_t kVaPediaItem = 0x006A85A0;   // the advance (or other item) on the page
+constexpr std::uint32_t kVaPediaLive = 0x006A678C;
+// The page object passed to the advance draw (0x564E6D, ecx = 0x6A6668).
+// +0x120 is the page index; +0x7EC is the table of item ids the page shows.
+constexpr std::uint32_t kVaPediaWindow = 0x006A6668;
+constexpr int kPediaPage = 0x120;
+constexpr int kPediaEntries = 0x7EC;
+constexpr std::uint32_t kVaPediaClose = 0x004F5DD1;  // cdecl (): the page's close
+constexpr std::uint32_t kVaPediaDismiss = 0x004F8D04;  // cdecl (): drops the document once close has run
+
+// The picture viewer used by the foreign-ministry report (0x43060B) and the
+// same family of modal pages. Object at 0x63EB10; +0x450 is the open id
+// (positive while open, -1 after 0x42A768, 0 before any page). The report's
+// own loop (0x43060B) exits when 0x625EC4 becomes non-zero. Close of a
+// non-modal viewer is thiscall 0x42A768. The report stores the other civ at
+// 0x63EFAC (set by 0x43060B).
+constexpr std::uint32_t kVaViewWindow = 0x0063EB10;
+constexpr int kViewOpen = 0x450;
+constexpr std::uint32_t kVaViewClose = 0x0042A768;  // thiscall (window): after the report loop returns
+// The report's 关闭 button (0x43060B registers it). It does not set 0x625EC4:
+// that flag means "draw the page again". The button returns to the loop,
+// the loop ends, and 0x42A768 runs afterwards.
+constexpr std::uint32_t kVaViewButtonClose = 0x0042AC4E;  // cdecl ()
+constexpr std::uint32_t kVaIntelCiv = 0x0063EFAC;
+
 // A left click on one of the player's units (map click handler 0x410F77):
 // leave moving mode, put the cursor on the tile, activate the top unit there
 // (a stack opens the units-list popup), centre the map on the tile.

@@ -340,6 +340,22 @@ def press_ok(dialog):
     return choose({"op": "act", "name": "respond", "option": choice["index"]})
 
 
+def _button_caption(option):
+    return (option.get("text") or "").replace(" ", "")
+
+
+def overwrite_choice(dialog, overwrite):
+    """The replace-prompt button to press. Captions win over button ids, because
+    the confirm box has reported id 0 for both 是 and 否."""
+    options = dialog.get("options") or []
+    def matches(option, words, ids):
+        caption = _button_caption(option)
+        return caption.startswith(words) or option.get("button") in ids
+    yes = next((o for o in options if matches(o, "是", (6,))), None)
+    no = next((o for o in options if matches(o, "否", (7, 2))), None)
+    return yes if overwrite else no
+
+
 def answer_file_dialog(path, overwrite):
     """Type the name into Windows' file dialog and press its button; answer
     the replace question it can ask. Returns None when the dialog is gone."""
@@ -348,10 +364,7 @@ def answer_file_dialog(path, overwrite):
         return response
     after = response.get("dialog")
     if after and after.get("via") == "windows" and after.get("kind") == "message":
-        # Windows asks before replacing a file; yes is button 6 in every language.
-        yes = next((o for o in after.get("options") or [] if o.get("button") == 6), None)
-        no = next((o for o in after.get("options") or [] if o.get("button") in (7, 2)), None)
-        pick = yes if overwrite else no
+        pick = overwrite_choice(after, overwrite)
         if not pick:
             return fail("illegal", "Windows 对话框问了一个不认识的问题", dialog=after)
         choose({"op": "act", "name": "respond", "option": pick["index"]})

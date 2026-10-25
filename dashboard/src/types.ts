@@ -113,9 +113,20 @@ export type ActionView = { kind: "tool" | "say"; text: string; time: string };
 export type CommandView = { time: string; command: string; ok: boolean; error: string; reason: string };
 export type ThoughtView = { text: string; done: boolean };
 
+export type GatewayLast = { command: string; ok: boolean; reason: string };
+
+export type GatewayView = {
+  lan: boolean;
+  holder: string | null;
+  command: string | null;
+  since: string | null;
+  last: GatewayLast | null;
+};
+
 export type Snapshot = {
   game: GameView;
   session: SessionView;
+  gateway: GatewayView;
   run: RunView | null;
   /** Token totals from earlier segments of this session, excluding the open run. */
   earlier: TokenCount | null;

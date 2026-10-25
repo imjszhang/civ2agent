@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { runCli } from "./cli.js";
 import type { CityBrief, CivBrief, DialogBrief, DiplomacyBrief, GameView, UnitBrief } from "./types.js";
 
 const EMPTY: GameView = {
@@ -6,28 +6,8 @@ const EMPTY: GameView = {
   civ: null, cities: [], units: [], diplomacy: [], dialog: null, cityWindow: null, taxWindow: null,
 };
 
-function lastJson(stdout: string): Record<string, unknown> | null {
-  const line = stdout.split(/\r?\n/u).filter(item => item.trim()).at(-1);
-  if (!line) return null;
-  try {
-    const value = JSON.parse(line) as unknown;
-    return typeof value === "object" && value !== null ? value as Record<string, unknown> : null;
-  } catch {
-    return null;
-  }
-}
-
 function call(python: string, ctl: string, args: string[], timeoutMs: number): Promise<Record<string, unknown>> {
-  return new Promise(resolve => {
-    const child = spawn(python, [ctl, "--timeout", "2", ...args], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
-    let out = "";
-    let settled = false;
-    const finish = (value: Record<string, unknown>) => { if (!settled) { settled = true; clearTimeout(timer); resolve(value); } };
-    const timer = setTimeout(() => { child.kill(); finish({ ok: false, error: "timeout", reason: "网关等待超时" }); }, timeoutMs);
-    child.stdout.on("data", (chunk: Buffer) => { out += chunk.toString("utf8"); });
-    child.on("error", () => finish({ ok: false, error: "not_connected", reason: "没有找到 Python" }));
-    child.on("close", () => finish(lastJson(out) ?? { ok: false, error: "cli_fault", reason: "命令没有输出" }));
-  });
+  return runCli(python, ctl, ["--timeout", "2", ...args], timeoutMs);
 }
 
 function asList<T>(value: unknown): T[] {

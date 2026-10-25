@@ -128,7 +128,8 @@ void Pump() {
     g_abort_on_dialog = false;
     g_running.reset();
   }
-  if (g_running && !IsDone(g_running) && g_abort_on_dialog && (GameDialogOpen() || GameWindowModal())) {
+  if (g_running && !IsDone(g_running) && g_abort_on_dialog &&
+      (GameDialogOpen() || GameWindowModal() || GameModalScreenOpen() || GameUnregisteredLock())) {
     std::string resp;
     if (GameTakeModalAbort(resp)) {
       GameCancelPending();
@@ -157,7 +158,7 @@ void Pump() {
       // Inside a dialog's own loop a game command cannot run. Answer it with
       // the dialog now: left queued it would time out and run late, and
       // end_turn's wake-up Enter would confirm a dialog the agent never saw.
-      if (!GameDialogOpen() && !GameWindowModal()) return;
+      if (!GameDialogOpen() && !GameWindowModal() && !GameModalScreenOpen() && !GameUnregisteredLock()) return;
       blocked_by_dialog = true;
     }
     job = g_queue.front();

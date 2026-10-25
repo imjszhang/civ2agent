@@ -1,6 +1,6 @@
 # civ2agent 命令行接口
 
-日期：2026-10-24，协议 3
+日期：2026-10-25，协议 3
 
 agent 通过 `cli/civ2ctl.py` 观察和操作《文明 II》。注入游戏的 `civ2agent.dll` 在游戏的界面线程执行命令，命令行经命名管道 `\\.\pipe\civ2agent` 和它通信。agent 只调用命令行，不读进程内存，也不直接连管道。
 
@@ -75,6 +75,8 @@ python civ2agent\cli\civ2ctl.py tools
 有对话框时发出的其他操作立即返回 `modal_open` 和 `dialog`，不会执行，也不会替你回答。先用 `respond` 回答。
 
 游戏有时自己打开城市窗口，并停下来等它关上（建城、攻下城市、回合结束时的报告）。这时 `city_window.modal` 为 true，除 `produce`（只能是这座城市）和 `close-city` 外的操作都返回 `modal_open`，带 `city_window`。和玩家一样，改完生产或看完后 `close-city`，游戏接着往下走。税率窗口同理，见 `rates`。
+
+科技完成之后的发现页（标题是科技名，正文是这项允许的后续科技，按钮「关闭」）和外交部情报页（标题「外交部·情报报告」，正文有政体、国库、军事、城市和对方正在研究的项目，按钮「关闭」）也是 `dialog`，`via` 为 `game`。用 `respond --text 关闭` 或 `respond --option 0` 关掉，效果和玩家点「关闭」一样。`city_window` 为 null 而操作返回 `modal_open`、原因是「有一扇还没登记的窗口挡着」时，画面上还有一页没有登记的窗口；记下 `dialog` 的标题后停下，不要改进程内存。
 
 ## 局面
 
@@ -224,6 +226,37 @@ python civ2agent\cli\civ2session.py list
 - `close` 退出游戏后恢复 CIV2.DAT 和 HALLFAME.DAT：agent 的局不改用户的游戏设置，也不进用户的名人堂。
 - 同时只有一局在进行（`games/.active`）。别的局在进行时 `new`、`setup`、`resume` 拒绝；游戏里正在进行的不是这局时，`close` 既不存它也不退出它。
 - agent 只通过 `civ2ctl.py` 看局面，不读 .SAV 的内容。
+
+## 局域网网关
+
+`dashboard` 在观察页之外提供 MCP（Streamable HTTP），路径 `/mcp`。局域网里的 agent 用它开局、续玩、存盘、收尾，以及代打。游戏规则仍由 `civ2session.py` 和 `civ2ctl.py` 执行，网关只串行转发。
+
+```text
+cd civ2agent\dashboard
+npm start
+```
+
+地址是 `http://<这台机器的局域网地址>:4732/mcp`，端口用 `DASHBOARD_PORT`（默认 4732）。请求带 `Authorization: Bearer 令牌`。默认只听 `127.0.0.1`。要对局域网开放，把 `DASHBOARD_HOST` 设为 `0.0.0.0`，同时设置 `DASHBOARD_TOKEN`；没有令牌时进程不启动。只听本机且没有令牌时，本机客户端免令牌。防火墙要由这台机器自己放行该端口。
+
+同一时刻只有一局、一条变更。先 `claim`（参数 `client` 是调用方的名字，显示在观察页上）取得 `lease`。开局、续玩、存盘、收尾和代打都要带上它；`release` 交回。没有命令在跑、空闲超过 10 分钟（`GATE_LEASE_IDLE_MS`）时租约自动放开。第二条变更立刻返回 `busy`，说明是谁在做什么，不排队。
+
+管理工具：
+
+- `list_games`、`game_status`、`read_game`：不需要租约。`read_game` 是观察页内存里的局面（连接、回合、年份、文明、对话框、城市窗口、税率窗口），不连管道。`game_status` 和 `resume_game` 的 `id` 只能是 `games/` 下的一层目录名。
+- `start_game`：`lease` 和 `spec`（对象，键与上面的 spec.json 相同），可选 `title`、`request`、`id`。交给 `civ2session.py new --spec`，可能要数分钟，开始时发一条进度「正在开局」。
+- `resume_game`、`checkpoint`、`close_game`：`close_game` 的 `status` 为 `paused` 或 `ended`，可选 `keep_running`。
+
+代打工具来自 `civ2ctl.py tools`，启动网关时注册：
+
+- `status`、`state`、`dialog` 不需要租约。锁被占用时不另发命令，返回 `busy` 和上一份快照。`state` 的 `tiles` 很大，说明与命令行相同。
+- `events` 以及 `respond`、`activate`、`move`、`goto`、`order`、`found-city`、`produce`、`close-city`、`rates`、`end-turn` 需要租约。
+- `respond` 的部分对话框会移动运行网关的这台机器的鼠标。操作期间游戏窗口留在屏幕上，不要动鼠标。
+
+不在 MCP 里：`save-game`、`load-game`、`quit-game`、`wait-ready`、`skip-intro`，以及 `civ2session.py` 的 `context`、`record-run`。存档、读档和退出只走 `checkpoint`、`resume_game`、`close_game`。
+
+每个工具的返回内容是命令行的那一行 JSON。`ok` 不为 true 时，MCP 结果标为错误。
+
+管道没有身份校验。开着这个网关时，本机上的 agent 也走 `/mcp`，不要再直接调用 `civ2ctl.py`，否则会和远程调用同时写管道。
 
 ## 让 agent 玩
 

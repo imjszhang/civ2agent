@@ -243,7 +243,7 @@ node civ2-play.mjs resume ..\games\<id> --turns 30 --target codex
 - `targets.json`（不进 git）：名字到 js-agent-runtime 的 target（`harness`、`backend`），`default` 是不给 `--target` 时用的。每段都可以换一个 agent。
 - 每一段：`civ2session.py context` 写好 agent 目录（`playbook.md`、`brief.md`、`context.md`、`notes.md`），agent 在 `agent/` 里运行，目标是往后玩 `--segment-turns` 个回合（默认 5）；之后在 `runs.jsonl` 记一行（状态、回合、用量、agent 的总结），运行记录在 `runs/`。玩够 `--turns`（默认 10）、某段失败或 agent 没有往前玩就停下，然后 `close`。Ctrl+C 也会停下并 `close`；`--keep-open` 不收尾。
 - `new --request`：第一段的 agent 按用户的原话写 `spec.json` 并 `setup`，然后接着玩。
-- agent 要运行 Python 和 `civ2ctl.py`（命名管道），少数对话框要用真实鼠标：Windows 上 Claude Code 没有沙箱，用 `permission: bypass`；别的 harness 的沙箱能不能做到要先试。js-agent-runtime 要有 Windows 进程支持（0.2.0 的 `run()` 只支持 macOS 和 Linux）。
+- agent 要运行 Python 和 `civ2ctl.py`（命名管道），少数对话框要用真实鼠标。js-agent-runtime 0.2.1 起 `run()` 在 Windows 上可用：超时和中断用 `taskkill /T /F` 结束进程树，比 POSIX 的进程组弱，根进程退出后它拉起的后台进程可能还在。`harness.executable` 必须是原生 `.exe`，不能是 npm 的 `.cmd`。0.2.2 起 Cursor Agent 也能在 Windows 上跑：`executable` 填版本目录里的 `node.exe`（不要填 `agent.cmd`），`cursor-login` 要加 `useCurrentUserHomeForLogin: true`。Windows 上 Claude Code 没有沙箱，用 `permission: bypass`。Codex、DeepSeek Harness、OpenCode 的沙箱在 Windows 上还没验证过。
 - `--python` 或 `CIV2AGENT_PYTHON` 指定运行命令行的 Python。
 - 运行时游戏窗口要留在屏幕上，不要动鼠标（`via` 为 `mouse` 的对话框会用真实鼠标点）。
 

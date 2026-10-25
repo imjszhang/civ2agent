@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>civ2agent</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header>
+    <h1>civ2agent</h1>
+    <p id="link">正在连接观察页…</p>
+  </header>
+  <main>
+    <section id="board">
+      <h2>局面</h2>
+      <div id="game" class="panel"></div>
+    </section>
+    <section id="agent">
+      <h2>这一段 agent</h2>
+      <div id="run" class="panel meta"></div>
+      <details id="task">
+        <summary>本段任务</summary>
+        <pre id="prompt"></pre>
+      </details>
+      <h3>思考</h3>
+      <div id="thoughts" class="panel stream"></div>
+      <h3>行动</h3>
+      <ol id="actions" class="panel stream"></ol>
+      <h3>命令</h3>
+      <ol id="commands" class="panel stream"></ol>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

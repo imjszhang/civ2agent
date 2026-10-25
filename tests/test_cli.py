@@ -8,6 +8,8 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -45,7 +47,11 @@ class RequestMapping(unittest.TestCase):
         self.assertEqual(build(["order", "--unit", "1", "--order", "irrigate"]),
                          {"op": "act", "name": "order", "unit": 1, "order": "irrigate"})
         self.assertEqual(build(["respond", "--text", "确定", "--edit", "罗马"]),
-                         {"op": "act", "name": "respond", "text": "确定", "edit": "罗马"})
+                         {"op": "act", "name": "respond", "text": "确定", "edits": ["罗马"]})
+        self.assertEqual(build(["respond", "--option", "0", "--edit", "60", "--edit", "40"]),
+                         {"op": "act", "name": "respond", "option": 0, "edits": ["60", "40"]})
+        self.assertEqual(build(["respond", "--file", r"D:\g\saves\T0001.SAV"]),
+                         {"op": "act", "name": "respond", "file": r"D:\g\saves\T0001.SAV"})
         self.assertEqual(build(["found-city", "--unit", "0"]), {"op": "act", "name": "found_city", "unit": 0})
         self.assertEqual(build(["state"]), {"op": "snapshot"})
         self.assertEqual(build(["dialog"]), {"op": "menu"})
@@ -61,6 +67,17 @@ class RequestMapping(unittest.TestCase):
 
     def test_cli_only_params_stay_out_of_the_request(self):
         self.assertEqual(build(["state", "--out", "s.json"]), {"op": "snapshot"})
+        self.assertEqual(build(["state", "--only", "civ,units"]), {"op": "snapshot"})
+
+    def test_state_only_keeps_the_named_parts(self):
+        args = civ2ctl.build_parser().parse_args(["state", "--only", "civ"])
+        full = {"ok": True, "in_game": True, "turn": 3, "year": -3900, "civ": {"gold": 5}, "units": [1], "tiles": [2]}
+        self.assertEqual(civ2ctl.keep_fields(args, full),
+                         {"ok": True, "in_game": True, "turn": 3, "year": -3900, "civ": {"gold": 5}})
+        menu = {"ok": True, "in_game": False, "dialog": {"title": "x"}}
+        self.assertEqual(civ2ctl.keep_fields(args, menu), menu)
+        with self.assertRaises(civ2ctl.UsageError):
+            build(["state", "--only", "civ,secrets"])
 
 
 class Manifest(unittest.TestCase):
@@ -84,6 +101,20 @@ class Manifest(unittest.TestCase):
     def test_cli_only_params_are_not_in_the_schema(self):
         state = next(t for t in civ2ctl.manifest()["tools"] if t["name"] == "state")
         self.assertNotIn("out", state["input_schema"]["properties"])
+        self.assertIn("only", state["input_schema"]["properties"])
+
+    def test_repeatable_flags_are_arrays(self):
+        respond = next(t for t in civ2ctl.manifest()["tools"] if t["name"] == "respond")
+        self.assertEqual(respond["input_schema"]["properties"]["edit"]["type"], "array")
+        command, args = civ2ctl.call_args("respond", '{"option": 1, "edit": ["60", "40"]}')
+        self.assertEqual(command.build(command, args), {"op": "act", "name": "respond", "option": 1, "edits": ["60", "40"]})
+        with self.assertRaises(civ2ctl.UsageError):
+            civ2ctl.call_args("respond", '{"option": 1, "edit": "60"}')
+
+    def test_save_load_and_quit_are_player_actions(self):
+        kinds = {t["name"]: t["kind"] for t in civ2ctl.manifest()["tools"]}
+        for name in ("save-game", "load-game", "quit-game"):
+            self.assertEqual(kinds[name], "act")
 
 
 class CallArguments(unittest.TestCase):
@@ -140,6 +171,59 @@ class ExitCodes(unittest.TestCase):
         code, out = run_cli(["tools"])
         self.assertEqual(code, 0)
         self.assertTrue(out[0]["ok"])
+
+    def test_save_game_checks_the_file_name_before_the_game(self):
+        with tempfile.TemporaryDirectory() as games:
+            os.environ["CIV2AGENT_GAMES_DIR"] = games
+            try:
+                for argv in (["save-game", "--file", "relative.SAV"], ["save-game", "--file", os.path.join(games, "x.txt")],
+                             ["save-game", "--file", os.path.join(games, "nope", "x.SAV")]):
+                    with self.subTest(argv=argv):
+                        code, out = run_cli(argv)
+                        self.assertEqual((code, out[0]["error"]), (2, "usage"))
+            finally:
+                del os.environ["CIV2AGENT_GAMES_DIR"]
+
+
+class Sessions(unittest.TestCase):
+    """An active game session (games/.active) limits what the agent may do and logs each call."""
+
+    def setUp(self):
+        self.games = tempfile.TemporaryDirectory()
+        root = Path(self.games.name)
+        self.session = root / "20261024-0000-test"
+        (self.session / "saves").mkdir(parents=True)
+        (root / ".active").write_text(json.dumps({"id": self.session.name, "dir": str(self.session)}), encoding="utf-8")
+        os.environ["CIV2AGENT_GAMES_DIR"] = self.games.name
+
+    def tearDown(self):
+        del os.environ["CIV2AGENT_GAMES_DIR"]
+        self.games.cleanup()
+
+    def log(self):
+        path = self.session / "log.jsonl"
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()] if path.exists() else []
+
+    def test_load_and_quit_are_refused_and_logged(self):
+        for argv in (["load-game", "--file", str(self.session / "saves" / "T0001.SAV")], ["quit-game", "--exit"]):
+            with self.subTest(argv=argv):
+                code, out = run_cli(argv)
+                self.assertEqual((code, out[0]["error"]), (1, "session_policy"))
+        self.assertEqual([e["command"] for e in self.log()], ["load-game", "quit-game"])
+
+    def test_saves_stay_in_the_session(self):
+        code, out = run_cli(["save-game", "--file", os.path.join(self.games.name, "elsewhere.SAV")])
+        self.assertEqual((code, out[0]["error"]), (1, "session_policy"))
+
+    def test_calls_are_logged_with_state_in_outline(self):
+        run_cli(["--timeout", "0.2", "state"])
+        entry = self.log()[-1]
+        self.assertEqual((entry["command"], entry["request"]), ("state", {"op": "snapshot"}))
+        self.assertEqual(entry["response"]["error"], "not_connected")
+        outline = civ2ctl.summarize("state", {"ok": True, "in_game": True, "turn": 7, "year": -3500,
+                                              "civ": {"gold": 30}, "units": [1, 2], "cities": [1], "tiles": [1] * 99})
+        self.assertEqual(outline, {"ok": True, "turn": 7, "year": -3500, "gold": 30, "units": 2, "cities": 1,
+                                   "dialog": None})
 
 
 if __name__ == "__main__":

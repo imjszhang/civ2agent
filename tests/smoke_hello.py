@@ -39,7 +39,7 @@ def main():
         )
         response = json.loads(run.stdout)
         print(json.dumps(response, ensure_ascii=False, indent=2))
-        if not response.get("ok") or response.get("protocol") != 2:
+        if not response.get("ok") or response.get("protocol") != 3:
             return 1
         if "exe_hash" not in response or "uia_loaded" not in response:
             return 1

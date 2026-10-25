@@ -1,0 +1,31 @@
+{
+  "default": "claude",
+  "targets": {
+    "claude": {
+      "harness": { "adapter": "claude-code", "executable": "C:\\path\\to\\claude.exe", "permission": "bypass" },
+      "backend": { "auth": "claude-config", "model": "configured" }
+    },
+    "codex": {
+      "harness": { "adapter": "codex", "executable": "C:\\path\\to\\codex.exe", "permission": "workspace-write" },
+      "backend": { "auth": "chatgpt", "model": "your-model-id" }
+    },
+    "deepseek": {
+      "harness": { "adapter": "deepseek-harness", "executable": "C:\\path\\to\\dsh.exe", "permission": "bypass" },
+      "backend": {
+        "auth": "api-key", "provider": "deepseek", "model": "your-model-id", "protocol": "anthropic-messages",
+        "baseURL": "https://api.deepseek.com/anthropic", "apiKeyEnv": "DEEPSEEK_API_KEY"
+      }
+    },
+    "opencode": {
+      "harness": { "adapter": "opencode", "executable": "C:\\path\\to\\opencode.exe", "permission": "workspace-write" },
+      "backend": {
+        "auth": "api-key", "provider": "deepseek", "model": "your-model-id", "protocol": "chat-completions",
+        "baseURL": "https://api.deepseek.com/v1", "apiKeyEnv": "DEEPSEEK_API_KEY"
+      }
+    },
+    "cursor": {
+      "harness": { "adapter": "cursor-agent", "executable": "/path/to/cursor-agent", "permission": "bypass" },
+      "backend": { "auth": "cursor-api-key", "model": "auto" }
+    }
+  }
+}

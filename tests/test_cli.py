@@ -64,6 +64,7 @@ class RequestMapping(unittest.TestCase):
                          {"op": "act", "name": "produce", "timeout_ms": 20000, "city": 2, "item": "战士"})
         self.assertEqual(build(["rates", "--tax", "4", "--science", "6"]),
                          {"op": "act", "name": "rates", "timeout_ms": 20000, "tax": 4, "science": 6})
+        self.assertEqual(build(["revolt"]), {"op": "act", "name": "revolt"})
 
     def test_cli_only_params_stay_out_of_the_request(self):
         self.assertEqual(build(["state", "--out", "s.json"]), {"op": "snapshot"})

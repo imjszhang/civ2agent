@@ -518,10 +518,13 @@ void ServeLoop() {
         if (job->op == "skip_intro" && job->timeout_ms == 8000) job->timeout_ms = 60000;
         std::string resp;
         // A Windows dialog holds the game thread: answer from here at once,
-        // a queued request would only time out.
+        // a queued request would only time out. A window that has no buttons
+        // and no filename box yet is not a question; the caller reads again.
         std::string sys = SysDialogJson();
         std::string now_resp;
-        if (!sys.empty()) now_resp = SystemDialogReply(*job, sys);
+        if (SysDialogUnready())
+          now_resp = "{\"ok\":false,\"error\":\"modal_open\",\"reason\":\"Windows 对话框还没准备好，再读一次\",\"dialog\":null}";
+        else if (!sys.empty()) now_resp = SystemDialogReply(*job, sys);
         else if (job->act.windows) now_resp = ErrJson("no_dialog", "Windows 对话框已经关了，先用 dialog 看一下");
         if (!now_resp.empty()) {
           resp = WithId(job->id, now_resp) + "\n";
@@ -539,6 +542,7 @@ void ServeLoop() {
           auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(job->timeout_ms);
           bool signaled = false;
           bool withdrawn = false;
+          bool unready_hold = false;
           while (!signaled) {
             auto now = std::chrono::steady_clock::now();
             if (now >= deadline) break;
@@ -547,9 +551,16 @@ void ServeLoop() {
             signaled = job->cv.wait_for(lock, slice, [&] { return job->done; });
             if (signaled) break;
             lock.unlock();
-            sys = SysDialogJson();
+            bool unready = SysDialogUnready();
+            sys = unready ? std::string() : SysDialogJson();
             // Not started yet, and a Windows dialog opened meanwhile: the game
             // thread cannot take it now.
+            if (unready && Withdraw(job)) {
+              withdrawn = true;
+              unready_hold = true;
+              lock.lock();
+              break;
+            }
             if (!sys.empty() && Withdraw(job)) {
               withdrawn = true;
               lock.lock();
@@ -563,7 +574,10 @@ void ServeLoop() {
           if (withdrawn) {
             job->abandoned = true;
             job->done = true;
-            resp = WithId(job->id, SystemDialogReply(*job, sys));
+            resp = unready_hold ? WithId(job->id,
+                                        "{\"ok\":false,\"error\":\"modal_open\",\"reason\":\"Windows 对话框还没准备好，再读一次\","
+                                        "\"dialog\":null}")
+                                : WithId(job->id, SystemDialogReply(*job, sys));
           } else if (!signaled) {
             job->abandoned = true;
             job->done = true;

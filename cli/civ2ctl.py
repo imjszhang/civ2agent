@@ -332,6 +332,23 @@ def option_with(dialog, *texts):
     return next((o for o in dialog.get("options") or [] if o.get("text") in texts and not o.get("disabled")), None)
 
 
+def wait_dialog_gone(title_part, timeout_s):
+    """Press 确定 while a message with this title is still up, then wait until it is gone."""
+    pressed = 0
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        dialog = current_dialog()
+        title = (dialog or {}).get("title") or ""
+        if title_part not in title:
+            return True
+        if pressed >= 2:
+            return False
+        press_ok(dialog)
+        pressed += 1
+        time.sleep(0.2)
+    return title_part not in ((current_dialog() or {}).get("title") or "")
+
+
 def press_ok(dialog):
     """Close a message that has only OK to press."""
     choice = option_with(dialog, "确定") or next(iter(dialog.get("options") or []), None)
@@ -397,6 +414,8 @@ def save_game(path, overwrite=False, connect_s=10.0):
         return fail("timeout", "保存后游戏没有显示消息")
     title = message.get("title") or ""
     press_ok(message)
+    if not wait_dialog_gone("存档完毕", 5):
+        return fail("game_fault", "「存档完毕!」还在", dialog=current_dialog())
     if "存档完毕" not in title:
         return fail("game_fault", "游戏没有存成：" + (message.get("text") or title).strip(), dialog=message)
     if not path.exists() or path.stat().st_mtime < started - 2:
@@ -590,6 +609,9 @@ COMMANDS = (
             params=(Param("tax", "integer", "税收比例 0-10", required=True),
                     Param("science", "integer", "科学比例 0-10", required=True)),
             build=request("act", "rates", timeout_ms=20000)),
+    Command("revolt", "act",
+            "发动革命，相当于点「王国」菜单的「革命」。菜单是灰的就拒绝。确认框不代答，返回 modal_open，用 respond 选。",
+            build=request("act", "revolt")),
     Command("end-turn", "act", "结束回合，等到再次轮到玩家。中途有对话框时返回 modal_open，先 respond，再看 turn_ended。",
             params=(Param("timeout_ms", "integer", "最多等多少毫秒", default=120000),),
             build=request("end_turn")),

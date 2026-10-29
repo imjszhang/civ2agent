@@ -323,7 +323,7 @@ constexpr std::uint32_t kVaImprovements = 0x0064C488;    // 67 x 8 bytes, string
 // window's document is up. Close is 0x4F5DD1 (thunk 0x401DCF): it raises the
 // done flag 0x6A677C, and 0x4F8D04 then drops the document.
 constexpr std::uint32_t kVaPediaStage = 0x006A6784;
-constexpr std::uint32_t kVaPediaKind = 0x006A6780;   // 1 and 8 are advances
+constexpr std::uint32_t kVaPediaKind = 0x006A6780;   // 1 and 8 are advances; other kinds are the encyclopedia
 constexpr std::uint32_t kVaPediaItem = 0x006A85A0;   // the advance (or other item) on the page
 constexpr std::uint32_t kVaPediaLive = 0x006A678C;
 // The page object passed to the advance draw (0x564E6D, ecx = 0x6A6668).
@@ -374,6 +374,8 @@ constexpr std::uint32_t kVaTaxWindowOk = 0x0040C3A5;  // cdecl (): the OK button
 constexpr std::uint32_t kVaMenuExec = 0x0040385A;     // cdecl (menu, command), what a menu click runs
 constexpr int kMenuKingdom = 2;
 constexpr int kMenuTaxRate = 0x201;
+// Kingdom > 革命(R), shortcut Shift+R. Id read from the live menu on this exe.
+constexpr int kMenuRevolt = 222;
 // @PRODUCTION record ids: unit type, 0x3E + improvement, 0x65 + wonder (= 0x3E + 39 + wonder).
 constexpr int kProductionImprovementBase = 0x3E;
 

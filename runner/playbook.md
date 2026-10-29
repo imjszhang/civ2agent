@@ -21,7 +21,7 @@
 2. 回合开始、没有对话框时运行一次 `civ2session.py checkpoint`（存这一回合）。同一回合重复运行没关系。返回 `modal_open` 就先回答对话框。
 3. 看局面：`state --only civ,cities,units,foreign_units,foreign_cities,diplomacy`。`tiles` 很大，只在要看地形时取。
 4. 做这一回合的事：城市生产（`produce`）、单位行动（`move`、`goto`、`order`、`found-city`）、税率（`rates`）。
-5. `end-turn`。返回 `modal_open` 时回答对话框；`turn_ended` 为 false 才再发一次 `end-turn`。
+5. `end-turn`。返回 `modal_open` 时回答对话框；`turn_ended` 为 false 才再发一次 `end-turn`。关掉回合间消息后再 `end-turn`，返回的回合就是要玩的那一回合。
 
 `events` 可以看到上次以来发生的事（单位损失、城市易手、研究完成）。
 

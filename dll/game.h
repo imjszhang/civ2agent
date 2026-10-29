@@ -50,6 +50,10 @@ bool GameTaxWindowOpen();
 bool GameWindowModal();
 // A civilopedia page or the foreign-ministry viewer is up.
 bool GameModalScreenOpen();
+// A wonder or throne movie is waiting for a mouse click.
+bool GameMovieOpen();
+// Release the left button pressed to step a movie, after the window proc ran.
+void GameReleaseMovieClick();
 // The city-window lock is set, but no city window and no known page is open.
 bool GameUnregisteredLock();
 

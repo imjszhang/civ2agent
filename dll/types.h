@@ -376,6 +376,14 @@ constexpr int kMenuKingdom = 2;
 constexpr int kMenuTaxRate = 0x201;
 // Kingdom > 革命(R), shortcut Shift+R. Id read from the live menu on this exe.
 constexpr int kMenuRevolt = 222;
+
+// Wonder and throne movies. 0x5DD920 creates an MSMMWindow and stores it here.
+// The window procedure 0x5CD149 steps one scene when the left button is down
+// (GetAsyncKeyState(VK_LBUTTON) via 0x5BD4CD). A click outside the film does nothing.
+// 0x5DDA53 / the following player store MCI device ids while a clip is open.
+constexpr std::uint32_t kVaMovieWindow = 0x006E4FF8;
+constexpr std::uint32_t kVaMovieDevice = 0x006389D4;
+constexpr std::uint32_t kVaMovieDevice2 = 0x006389D8;
 // @PRODUCTION record ids: unit type, 0x3E + improvement, 0x65 + wonder (= 0x3E + 39 + wonder).
 constexpr int kProductionImprovementBase = 0x3E;
 

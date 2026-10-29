@@ -15,6 +15,8 @@
 #include <string>
 #include <vector>
 
+bool g_movie_button_down = false;
+
 namespace {
 
 std::uint8_t* g_base = nullptr;
@@ -383,11 +385,15 @@ std::string DialogHeadJson(void* dlg) {
 
 // Every dialog report carries the same numbered options that act respond
 // picks from, so an index read from modal_open or an event is valid there.
+std::string MovieJson();
+
 std::string DialogJson() {
   void* dlg = DialogPtr();
   if (dlg) return "{" + DialogHeadJson(dlg) + "," + DialogOptionsJson(dlg) + DialogEditsJson(dlg) + "}";
   std::string screen = ModalScreenJson();
-  return screen.empty() ? "null" : screen;
+  if (!screen.empty()) return screen;
+  std::string film = MovieJson();
+  return film.empty() ? "null" : film;
 }
 
 // Advice the game shows without waiting for an answer.
@@ -1392,6 +1398,52 @@ std::string SetDialogEdits(void* dlg, const std::vector<std::string>& utf8) {
   return {};
 }
 
+// The film window created for a wonder or the throne room. Stale after the
+// window is destroyed: IsWindow fails, so a leftover handle is not a movie.
+HWND MovieWindow() {
+  auto** slot = At<HWND>(kVaMovieWindow);
+  if (!Readable(slot, sizeof(HWND))) return nullptr;
+  HWND hwnd = *slot;
+  if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd)) return nullptr;
+  wchar_t cls[32] = {};
+  if (GetClassNameW(hwnd, cls, 32) == 0 || wcscmp(cls, L"MSMMWindow") != 0) return nullptr;
+  return hwnd;
+}
+
+std::string MovieJson() {
+  HWND hwnd = MovieWindow();
+  if (!hwnd) return {};
+  char caption[512] = {};
+  GetWindowTextA(hwnd, caption, sizeof(caption));
+  std::string scene = ReadGameText(caption, 400);
+  std::string text = "按鼠标键继续";
+  if (!scene.empty()) text = scene + "\n" + text;
+  return "{\"title\":" + JsonString("奇观") + ",\"text\":" + JsonString(text) +
+         ",\"kind\":\"controls\",\"via\":\"game\",\"options\":[{\"index\":0,\"text\":" + JsonString("继续") + "}]}";
+}
+
+// One real left click on the film. The scene steps only while the button is
+// down inside that window, so the button is released after this message's
+// window procedure returns. Posted clicks to other windows are not used.
+std::string ClickMovie() {
+  HWND hwnd = MovieWindow();
+  if (!hwnd) return ErrJson("no_dialog", "没有打开的界面");
+  RECT client{};
+  if (!GetClientRect(hwnd, &client)) return ErrJson("game_fault", "找不到影片窗口");
+  POINT pt{(client.right - client.left) / 2, (client.bottom - client.top) / 2};
+  if (!ClientToScreen(hwnd, &pt)) return ErrJson("game_fault", "找不到影片窗口");
+  HWND at = WindowFromPoint(pt);
+  if (at != hwnd && GetAncestor(at, GA_ROOT) != GetAncestor(hwnd, GA_ROOT))
+    return ErrJson("window_covered", "影片被别的窗口挡住了");
+  SetCursorPos(pt.x, pt.y);
+  INPUT down{};
+  down.type = INPUT_MOUSE;
+  down.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+  if (SendInput(1, &down, sizeof(down)) != 1) return ErrJson("game_fault", "点影片失败");
+  g_movie_button_down = true;
+  return OkJson(std::string("\"index\":0,\"text\":") + JsonString("继续") + ",\"via\":\"game\",\"changed\":true");
+}
+
 // Most dialogs are answered through the game's own handler for the chosen
 // control. The rest (checkboxes, icon rows) have real controls that ignore
 // posted mouse messages; for those the caller gets screen coordinates and
@@ -1400,12 +1452,19 @@ std::string SetDialogEdits(void* dlg, const std::vector<std::string>& utf8) {
 std::string ClickMenuOption(int index, const std::string& text, const std::vector<std::string>* edits) {
   void* dlg = DialogPtr();
   if (!dlg) {
-    ModalKind screen = CurrentModal();
-    if (screen == ModalKind::None) return ErrJson("no_dialog", "没有打开的界面");
     if (edits && !edits->empty()) return ErrJson("illegal", "这个窗口没有输入框");
-    bool close = text.empty() ? index == 0 : text == "关闭";
-    if (!close) return ErrJson("illegal", "这个窗口只有「关闭」");
-    return CloseModalScreen(screen);
+    ModalKind screen = CurrentModal();
+    if (screen != ModalKind::None) {
+      bool close = text.empty() ? index == 0 : text == "关闭";
+      if (!close) return ErrJson("illegal", "这个窗口只有「关闭」");
+      return CloseModalScreen(screen);
+    }
+    if (MovieWindow()) {
+      bool next = text.empty() ? index == 0 : text == "继续";
+      if (!next) return ErrJson("illegal", "这个窗口只有「继续」");
+      return ClickMovie();
+    }
+    return ErrJson("no_dialog", "没有打开的界面");
   }
   std::vector<MenuChoice> choices = ChoicesFor(dlg).choices;
   if (!text.empty()) {
@@ -2251,7 +2310,7 @@ std::string BeginProduce(const ActArgs& a) {
   if (Cities()[a.city].owner != Human()) return ErrJson("illegal", "这不是己方城市");
   int open = OpenCityWindow();
   int locked = LockedCityWindow();
-  if (CityWindowLocked() && locked < 0 && !GameModalScreenOpen()) {
+  if (CityWindowLocked() && locked < 0 && !GameModalScreenOpen() && !GameMovieOpen()) {
     return std::string("{\"ok\":false,\"error\":\"modal_open\",\"reason\":") +
            JsonString("有一扇还没登记的窗口挡着") + ",\"city_window\":null,\"dialog\":" + DialogJson() + "}";
   }
@@ -2395,6 +2454,15 @@ std::string PollProduce() {
 
 }  // namespace
 
+void GameReleaseMovieClick() {
+  if (!g_movie_button_down) return;
+  g_movie_button_down = false;
+  INPUT up{};
+  up.type = INPUT_MOUSE;
+  up.mi.dwFlags = MOUSEEVENTF_LEFTUP;
+  SendInput(1, &up, sizeof(up));
+}
+
 void GameLog(const char* fmt, ...) {
   char buf[512];
   va_list ap;
@@ -2441,9 +2509,11 @@ bool GameDialogOpen() { return DialogPtr() != nullptr; }
 
 bool GameModalScreenOpen() { return CurrentModal() != ModalKind::None; }
 
+bool GameMovieOpen() { return MovieWindow() != nullptr; }
+
 bool GameUnregisteredLock() {
   return MatchLive() && CityWindowLocked() && LockedCityWindow() < 0 && CurrentModal() == ModalKind::None &&
-         DialogPtr() == nullptr;
+         DialogPtr() == nullptr && !GameMovieOpen();
 }
 
 void GameObserveDialog() {
@@ -2466,6 +2536,13 @@ void GameObserveDialog() {
       PushEvent("{\"type\":\"dialog_closed\"}");
     last_screen = screen;
   }
+  static bool last_movie = false;
+  bool movie = now == nullptr && screen == ModalKind::None && GameMovieOpen();
+  if (movie != last_movie) {
+    if (movie) PushEvent(std::string("{\"type\":\"dialog\",\"dialog\":") + DialogJson() + "}");
+    else if (!now) PushEvent("{\"type\":\"dialog_closed\"}");
+    last_movie = movie;
+  }
   void* notice = NoticePtr();
   if (notice && notice != g_last_notice) PushEvent(std::string("{\"type\":\"notice\",\"notice\":") + NoticeJson() + "}");
   g_last_notice = notice;
@@ -2474,10 +2551,11 @@ void GameObserveDialog() {
 bool GameTakeModalAbort(std::string& response_json) {
   bool dialog = DialogPtr() != nullptr;
   bool screen = !dialog && GameModalScreenOpen();
-  bool tax = !dialog && !screen && GameTaxWindowOpen();
-  bool city = !dialog && !screen && !tax && GameCityWindowModal();
-  bool unknown = !dialog && !screen && !tax && !city && GameUnregisteredLock();
-  if (!dialog && !screen && !tax && !city && !unknown) return false;
+  bool film = !dialog && !screen && GameMovieOpen();
+  bool tax = !dialog && !screen && !film && GameTaxWindowOpen();
+  bool city = !dialog && !screen && !film && !tax && GameCityWindowModal();
+  bool unknown = !dialog && !screen && !film && !tax && !city && GameUnregisteredLock();
+  if (!dialog && !screen && !film && !tax && !city && !unknown) return false;
   std::string turn;
   if (MatchLive()) {
     turn = std::string("\"turn\":") + std::to_string(G()->turn) + ",\"year\":" + std::to_string(GameYear()) + ",";
@@ -2489,6 +2567,7 @@ bool GameTakeModalAbort(std::string& response_json) {
   }
   const char* reason = dialog ? "出现对话框"
                        : screen ? "画面上有一页窗口，用 respond 关闭"
+                       : film   ? "奇观动画在等鼠标，用 respond 继续"
                        : tax    ? "税率窗口打开着，游戏等它关上；用 rates 设好比例并确定"
                        : city   ? "城市窗口打开着，游戏等它关上；用 produce 或 close-city"
                                 : "有一扇还没登记的窗口挡着";
@@ -2540,7 +2619,7 @@ Gate CachedGate() {
 
 std::string GameHelloJson() {
   Gate g = GameGate();
-  return HelloJson(g, g.hash_ok && (DialogPtr() != nullptr || GameModalScreenOpen()), g.in_game ? CityWindowJson() : std::string("null"),
+  return HelloJson(g, g.hash_ok && (DialogPtr() != nullptr || GameModalScreenOpen() || GameMovieOpen()), g.in_game ? CityWindowJson() : std::string("null"),
                    g.in_game ? TaxWindowJson() : std::string("null"));
 }
 
@@ -2773,7 +2852,7 @@ std::string GameActJson(const ActArgs& a) {
     return ClickMenuOption(a.option, a.text, a.has_edit ? &a.edits : nullptr);
   }
   if (!RequireMatch(err)) return err;
-  if (DialogPtr() || GameModalScreenOpen() || GameUnregisteredLock()) {
+  if (DialogPtr() || GameModalScreenOpen() || GameMovieOpen() || GameUnregisteredLock()) {
     std::string held;
     if (GameTakeModalAbort(held)) return held;
   }
@@ -2873,7 +2952,7 @@ std::string GameActJson(const ActArgs& a) {
 std::string GameBeginEndTurnJson() {
   std::string err;
   if (!RequireMatch(err)) return err;
-  if (DialogPtr() || GameModalScreenOpen() || GameUnregisteredLock()) {
+  if (DialogPtr() || GameModalScreenOpen() || GameMovieOpen() || GameUnregisteredLock()) {
     std::string held;
     if (GameTakeModalAbort(held)) return held;
   }
@@ -2922,7 +3001,7 @@ bool GamePendingActive() { return g_pending.kind != PendingKind::None; }
 std::string GamePollPending(int depth) {
   if (g_pending.kind == PendingKind::None) return {};
   if (g_pending.kind == PendingKind::Revolt) {
-    if (DialogPtr() || GameModalScreenOpen() || GameUnregisteredLock()) {
+    if (DialogPtr() || GameModalScreenOpen() || GameMovieOpen() || GameUnregisteredLock()) {
       g_pending = {};
       std::string held;
       if (GameTakeModalAbort(held)) return held;
@@ -2958,7 +3037,8 @@ std::string GamePollPending(int depth) {
     return {};
   }
   auto* game = G();
-  if (g_pending.kind == PendingKind::EndTurn && !DialogPtr() && !GameModalScreenOpen() && !GameUnregisteredLock()) {
+  if (g_pending.kind == PendingKind::EndTurn && !DialogPtr() && !GameModalScreenOpen() && !GameMovieOpen() &&
+      !GameUnregisteredLock()) {
     bool advanced = game->turn != g_pending.turn || game->year != g_pending.year;
     if (advanced && depth == 1) {
       g_pending = {};

@@ -129,7 +129,7 @@ void Pump() {
     g_running.reset();
   }
   if (g_running && !IsDone(g_running) && g_abort_on_dialog &&
-      (GameDialogOpen() || GameWindowModal() || GameModalScreenOpen() || GameUnregisteredLock())) {
+      (GameDialogOpen() || GameWindowModal() || GameModalScreenOpen() || GameMovieOpen() || GameUnregisteredLock())) {
     std::string resp;
     if (GameTakeModalAbort(resp)) {
       GameCancelPending();
@@ -158,7 +158,9 @@ void Pump() {
       // Inside a dialog's own loop a game command cannot run. Answer it with
       // the dialog now: left queued it would time out and run late, and
       // end_turn's wake-up Enter would confirm a dialog the agent never saw.
-      if (!GameDialogOpen() && !GameWindowModal() && !GameModalScreenOpen() && !GameUnregisteredLock()) return;
+      if (!GameDialogOpen() && !GameWindowModal() && !GameModalScreenOpen() && !GameMovieOpen() &&
+          !GameUnregisteredLock())
+        return;
       blocked_by_dialog = true;
     }
     job = g_queue.front();
@@ -210,6 +212,7 @@ LRESULT WINAPI DispatchHook(const MSG* msg) {
   ++g_depth;
   if (g_depth == 1 || g_depth > 1) Pump();
   LRESULT result = g_orig_dispatch(msg);
+  GameReleaseMovieClick();
   --g_depth;
   return result;
 }

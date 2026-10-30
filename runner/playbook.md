@@ -17,7 +17,7 @@
 
 ## 每一回合
 
-1. 先处理对话框：`dialog` 不为 null 就用 `respond` 回答（看清 options 再选）。研究项、建城后的命名都在对话框里。
+1. 先处理对话框：`dialog` 不为 null 就用 `respond` 回答（看清 options 再选）。研究项、建城后的命名都在对话框里。看到「继续」就回答，不要自己点游戏窗口。
 2. 回合开始、没有对话框时运行一次 `civ2session.py checkpoint`（存这一回合）。同一回合重复运行没关系。返回 `modal_open` 就先回答对话框。
 3. 看局面：`state --only civ,cities,units,foreign_units,foreign_cities,diplomacy`。`tiles` 很大，只在要看地形时取。
 4. 做这一回合的事：城市生产（`produce`）、单位行动（`move`、`goto`、`order`、`found-city`）、税率（`rates`）。

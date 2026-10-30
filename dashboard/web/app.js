@@ -9,6 +9,11 @@ const commands = document.querySelector("#commands");
 
 const state = { game: null, gateway: null, session: null, run: null, earlier: null, prompt: "", thoughts: [], actions: [], commands: [] };
 
+const KEEP_COMMANDS = 80;
+const KEEP_ACTIONS = 80;
+const KEEP_THOUGHTS = 40;
+const THOUGHT_CHARS = 4000;
+
 const STATUS = { running: "进行中", completed: "已完成", failed: "失败", cancelled: "已取消", timed_out: "超时" };
 const EFFORT = { none: "无", minimal: "最低", low: "低", medium: "中", high: "高", xhigh: "很高", max: "最大", ultra: "极高" };
 const num = value => new Intl.NumberFormat("zh-CN").format(value);
@@ -166,36 +171,54 @@ function renderRun() {
   runBox.append(dl);
 }
 
+function nearEnd(el) {
+  return el.scrollHeight - el.scrollTop - el.clientHeight < 32;
+}
+
+function trimChildren(el, limit) {
+  while (el.children.length > limit) el.firstElementChild.remove();
+}
+
+function keepText(text) {
+  return text.length > THOUGHT_CHARS ? text.slice(-THOUGHT_CHARS) : text;
+}
+
+function thoughtNode(thought) {
+  const p = document.createElement("p");
+  p.className = thought.done ? "thought" : "thought open";
+  p.textContent = thought.text;
+  return p;
+}
+
+function actionNode(action) {
+  const li = document.createElement("li");
+  li.className = action.kind === "tool" ? "tool" : "";
+  li.textContent = action.text;
+  return li;
+}
+
+function commandNode(command) {
+  const li = document.createElement("li");
+  li.className = command.ok ? "command ok" : "command bad";
+  li.textContent = `${command.time.slice(11, 19)} ${command.command}${command.ok ? "" : "　" + (command.reason || command.error)}`;
+  return li;
+}
+
 function renderThoughts() {
   thoughts.replaceChildren();
-  for (const thought of state.thoughts) {
-    const p = document.createElement("p");
-    p.className = thought.done ? "thought" : "thought open";
-    p.textContent = thought.text;
-    thoughts.append(p);
-  }
+  for (const thought of state.thoughts) thoughts.append(thoughtNode(thought));
   thoughts.scrollTop = thoughts.scrollHeight;
 }
 
 function renderActions() {
   actions.replaceChildren();
-  for (const action of state.actions) {
-    const li = document.createElement("li");
-    li.className = action.kind === "tool" ? "tool" : "";
-    li.textContent = action.text;
-    actions.append(li);
-  }
+  for (const action of state.actions) actions.append(actionNode(action));
   actions.scrollTop = actions.scrollHeight;
 }
 
 function renderCommands() {
   commands.replaceChildren();
-  for (const command of state.commands) {
-    const li = document.createElement("li");
-    li.className = command.ok ? "command ok" : "command bad";
-    li.textContent = `${command.time.slice(11, 19)} ${command.command}${command.ok ? "" : "　" + (command.reason || command.error)}`;
-    commands.append(li);
-  }
+  for (const command of state.commands) commands.append(commandNode(command));
   commands.scrollTop = commands.scrollHeight;
 }
 
@@ -210,11 +233,23 @@ function renderAll() {
 }
 
 function onThought(data) {
+  const follow = nearEnd(thoughts);
   const last = state.thoughts.at(-1);
-  if (data.done) { if (last) last.done = true; }
-  else if (last && !last.done) last.text += data.text;
-  else state.thoughts.push({ text: data.text, done: false });
-  renderThoughts();
+  const node = thoughts.lastElementChild;
+  if (data.done) {
+    if (last) last.done = true;
+    if (node) node.className = "thought";
+  } else if (last && !last.done && node) {
+    last.text = keepText(last.text + data.text);
+    node.textContent = last.text;
+  } else {
+    const thought = { text: keepText(data.text), done: false };
+    state.thoughts.push(thought);
+    if (state.thoughts.length > KEEP_THOUGHTS) state.thoughts.shift();
+    thoughts.append(thoughtNode(thought));
+    trimChildren(thoughts, KEEP_THOUGHTS);
+  }
+  if (follow) thoughts.scrollTop = thoughts.scrollHeight;
 }
 
 const source = new EventSource("/events");
@@ -230,8 +265,22 @@ source.addEventListener("session", event => { state.session = JSON.parse(event.d
 source.addEventListener("run", event => { state.run = JSON.parse(event.data); renderRun(); });
 source.addEventListener("prompt", event => { if (!state.prompt) { state.prompt = JSON.parse(event.data).text; prompt.textContent = state.prompt; } });
 source.addEventListener("thought", event => onThought(JSON.parse(event.data)));
-source.addEventListener("action", event => { state.actions.push(JSON.parse(event.data)); renderActions(); });
-source.addEventListener("command", event => { state.commands.push(JSON.parse(event.data)); renderCommands(); });
+source.addEventListener("action", event => {
+  const follow = nearEnd(actions);
+  state.actions.push(JSON.parse(event.data));
+  if (state.actions.length > KEEP_ACTIONS) state.actions.shift();
+  actions.append(actionNode(state.actions.at(-1)));
+  trimChildren(actions, KEEP_ACTIONS);
+  if (follow) actions.scrollTop = actions.scrollHeight;
+});
+source.addEventListener("command", event => {
+  const follow = nearEnd(commands);
+  state.commands.push(JSON.parse(event.data));
+  if (state.commands.length > KEEP_COMMANDS) state.commands.shift();
+  commands.append(commandNode(state.commands.at(-1)));
+  trimChildren(commands, KEEP_COMMANDS);
+  if (follow) commands.scrollTop = commands.scrollHeight;
+});
 source.addEventListener("earlier", event => { state.earlier = JSON.parse(event.data); renderRun(); });
 source.addEventListener("reset", event => {
   const scope = JSON.parse(event.data).scope;

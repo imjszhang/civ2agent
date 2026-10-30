@@ -16,6 +16,9 @@
 #include <vector>
 
 bool g_movie_button_down = false;
+// Bumped after a click advances a still, so the next identical caption is a
+// different dialog for the client (title and button stay the same).
+int g_film_epoch = 0;
 
 namespace {
 
@@ -1400,6 +1403,7 @@ std::string SetDialogEdits(void* dlg, const std::vector<std::string>& utf8) {
 
 // The film window created for a wonder or the throne room. Stale after the
 // window is destroyed: IsWindow fails, so a leftover handle is not a movie.
+// The startup handle stays hidden, so visibility is required.
 HWND MovieWindow() {
   auto** slot = At<HWND>(kVaMovieWindow);
   if (!Readable(slot, sizeof(HWND))) return nullptr;
@@ -1410,14 +1414,62 @@ HWND MovieWindow() {
   return hwnd;
 }
 
+// Palace stills keep the view object at kVaThroneView for the whole wait.
+// The click handler is installed only when a graphic option is high enough,
+// so the pointer plus the wait flag is the signal on a normal game.
+bool ThroneWaiting() {
+  auto** slot = At<void*>(kVaThroneView);
+  if (!Readable(slot, sizeof(void*))) return false;
+  void* throne = *slot;
+  if (!Readable(throne, kThroneModal + kModalRunning + sizeof(int))) return false;
+  auto* modal = static_cast<char*>(throne) + kThroneModal;
+  if (*reinterpret_cast<int*>(modal + kModalRunning) == 0) return false;
+  int depth = ReadIntAt(kVaModalDepth);
+  if (depth < 0 || depth > 14) return false;
+  auto** stack = At<void*>(kVaModalStack);
+  if (!Readable(stack, 16 * sizeof(void*))) return false;
+  return stack[depth] == modal;
+}
+
+// The still that waits on a mouse click without showing MSMMWindow. The
+// hidden startup window and the MCI device ids are not this signal.
+bool ClickFilmWaiting() {
+  if (!g_base || !MatchLive()) return false;
+  if (DialogPtr() || CurrentModal() != ModalKind::None) return false;
+  if (GameTaxWindowOpen() || GameCityWindowOpen()) return false;
+  if (ThroneWaiting()) return true;
+  int depth = ReadIntAt(kVaModalDepth);
+  if (depth < 0 || depth > 14) return false;
+  auto** stack = At<void*>(kVaModalStack);
+  if (!Readable(stack, 16 * sizeof(void*))) return false;
+  void* modal = stack[depth];
+  if (!Readable(modal, kModalHandler + sizeof(void*))) return false;
+  auto* base = static_cast<char*>(modal);
+  if (*reinterpret_cast<int*>(base + kModalRunning) == 0) return false;
+  auto handler = *reinterpret_cast<std::uintptr_t*>(base + kModalHandler);
+  auto stub = reinterpret_cast<std::uintptr_t>(g_base) + (kVaClickContinue - kImageBase);
+  return handler == stub;
+}
+
+// Throne stills keep a scene number on the parent object (this+0x1924).
+// Other click-to-continue views leave it unreadable; the wait flag is enough.
+int FilmScene(void* modal) {
+  auto* scene = reinterpret_cast<char*>(modal) - kThroneModal + kThroneScene;
+  if (!Readable(scene, sizeof(int))) return 0;
+  return *reinterpret_cast<int*>(scene);
+}
+
 std::string MovieJson() {
   HWND hwnd = MovieWindow();
-  if (!hwnd) return {};
-  char caption[512] = {};
-  GetWindowTextA(hwnd, caption, sizeof(caption));
-  std::string scene = ReadGameText(caption, 400);
-  std::string text = "按鼠标键继续";
-  if (!scene.empty()) text = scene + "\n" + text;
+  bool still = ClickFilmWaiting();
+  if (!hwnd && !still) return {};
+  std::string text = "按鼠标键继续\n" + std::to_string(g_film_epoch);
+  if (hwnd) {
+    char caption[512] = {};
+    GetWindowTextA(hwnd, caption, sizeof(caption));
+    std::string scene = ReadGameText(caption, 400);
+    if (!scene.empty()) text = scene + "\n" + text;
+  }
   return "{\"title\":" + JsonString("奇观") + ",\"text\":" + JsonString(text) +
          ",\"kind\":\"controls\",\"via\":\"game\",\"options\":[{\"index\":0,\"text\":" + JsonString("继续") + "}]}";
 }
@@ -1463,6 +1515,15 @@ std::string ClickMenuOption(int index, const std::string& text, const std::vecto
       bool next = text.empty() ? index == 0 : text == "继续";
       if (!next) return ErrJson("illegal", "这个窗口只有「继续」");
       return ClickMovie();
+    }
+    // The still is answered from the pipe thread. A click posted here would
+    // run on the game thread, which is the thread stuck in the wait.
+    if (ClickFilmWaiting()) {
+      bool next = text.empty() ? index == 0 : text == "继续";
+      if (!next) return ErrJson("illegal", "这个窗口只有「继续」");
+      std::string held;
+      if (GameTakeModalAbort(held)) return held;
+      return ErrJson("modal_open", "奇观动画在等鼠标，用 respond 继续");
     }
     return ErrJson("no_dialog", "没有打开的界面");
   }
@@ -1556,6 +1617,44 @@ HWND MapWindow() {
   TopPick pick;
   EnumChildWindows(main, PickMapChild, reinterpret_cast<LPARAM>(&pick));
   return pick.hwnd;
+}
+
+// The palace still is drawn in the 640x480 view. Civ2UIA also creates a
+// fullscreen shell of the same class; the largest window is that shell, and
+// a click in its lower middle lands on the black border.
+struct PicturePick {
+  HWND hwnd = nullptr;
+  int distance = 0;
+};
+
+BOOL CALLBACK PickPicture(HWND hwnd, LPARAM lp) {
+  DWORD pid = 0;
+  GetWindowThreadProcessId(hwnd, &pid);
+  if (pid != GetCurrentProcessId() || !IsWindowVisible(hwnd)) return TRUE;
+  char cls[40] = {};
+  GetClassNameA(hwnd, cls, sizeof(cls));
+  if (strcmp(cls, "MSWindowClass") != 0) return TRUE;
+  RECT client{};
+  if (!GetClientRect(hwnd, &client)) return TRUE;
+  int width = client.right - client.left;
+  int height = client.bottom - client.top;
+  if (width < 320 || height < 240) return TRUE;
+  int dw = width - 640;
+  int dh = height - 480;
+  int distance = dw * dw + dh * dh;
+  auto* pick = reinterpret_cast<PicturePick*>(lp);
+  if (!pick->hwnd || distance < pick->distance) {
+    pick->hwnd = hwnd;
+    pick->distance = distance;
+  }
+  return TRUE;
+}
+
+HWND PictureWindow() {
+  PicturePick pick;
+  EnumWindows(PickPicture, reinterpret_cast<LPARAM>(&pick));
+  if (pick.hwnd) return pick.hwnd;
+  return MapWindow();
 }
 
 constexpr LPARAM kKickEnter = 1;
@@ -2509,7 +2608,89 @@ bool GameDialogOpen() { return DialogPtr() != nullptr; }
 
 bool GameModalScreenOpen() { return CurrentModal() != ModalKind::None; }
 
-bool GameMovieOpen() { return MovieWindow() != nullptr; }
+bool GameMovieOpen() { return MovieWindow() != nullptr || ClickFilmWaiting(); }
+
+std::string GameClickFilm() {
+  HWND movie = MovieWindow();
+  bool still = ClickFilmWaiting();
+  if (!movie && !still) return ErrJson("no_dialog", "没有打开的界面");
+  int depth = still ? ReadIntAt(kVaModalDepth) : -1;
+  void* modal = nullptr;
+  int scene = 0;
+  if (still && depth >= 0 && depth <= 14) {
+    modal = At<void*>(kVaModalStack)[depth];
+    scene = FilmScene(modal);
+  }
+  bool scene_ok = scene >= 0 && scene <= 3;
+  HWND target = movie ? movie : PictureWindow();
+  if (!target) target = MainWindow();
+  if (!target) return ErrJson("game_fault", "找不到影片窗口");
+  HWND expect = movie ? GetAncestor(movie, GA_ROOT) : nullptr;
+  if (!expect) {
+    HWND main = MainWindow();
+    expect = main ? GetAncestor(main, GA_ROOT) : nullptr;
+  }
+  if (expect) {
+    ShowWindow(expect, SW_RESTORE);
+    SetForegroundWindow(expect);
+    Sleep(30);
+  }
+  RECT client{};
+  if (!GetClientRect(target, &client)) return ErrJson("game_fault", "找不到影片窗口");
+  int width = client.right - client.left;
+  int height = client.bottom - client.top;
+  if (width < 8 || height < 8) return ErrJson("game_fault", "找不到影片窗口");
+  // Lower middle of the picture: the throne pedestal ignores some clicks.
+  POINT pt{width / 2, height * 3 / 4};
+  if (!ClientToScreen(target, &pt)) return ErrJson("game_fault", "找不到影片窗口");
+  HWND at = WindowFromPoint(pt);
+  DWORD at_pid = 0;
+  if (at) GetWindowThreadProcessId(at, &at_pid);
+  // The picture may be a top-level view beside the menu window. It still
+  // belongs to this process; another application's window does not.
+  if (at_pid != GetCurrentProcessId()) return ErrJson("window_covered", "影片被别的窗口挡住了");
+  SetCursorPos(pt.x, pt.y);
+  INPUT down{};
+  down.type = INPUT_MOUSE;
+  down.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+  if (SendInput(1, &down, sizeof(down)) != 1) return ErrJson("game_fault", "点影片失败");
+  Sleep(50);
+  INPUT up{};
+  up.type = INPUT_MOUSE;
+  up.mi.dwFlags = MOUSEEVENTF_LEFTUP;
+  if (SendInput(1, &up, sizeof(up)) != 1) return ErrJson("game_fault", "点影片失败");
+  bool changed = false;
+  DWORD start = GetTickCount();
+  while (GetTickCount() - start < 2000) {
+    Sleep(15);
+    bool dialog = DialogPtr() != nullptr || CurrentModal() != ModalKind::None;
+    bool open = GameMovieOpen();
+    bool stepped = false;
+    if (still && open) {
+      int now_depth = ReadIntAt(kVaModalDepth);
+      void* now = (now_depth >= 0 && now_depth <= 14) ? At<void*>(kVaModalStack)[now_depth] : nullptr;
+      int now_scene = now ? FilmScene(now) : 0;
+      bool scene_step = scene_ok && now_scene >= 0 && now_scene <= 3 && now_scene != scene;
+      bool cleared = modal && Readable(modal, kModalRunning + sizeof(int)) &&
+                     *reinterpret_cast<int*>(static_cast<char*>(modal) + kModalRunning) == 0;
+      stepped = now_depth != depth || now != modal || scene_step || cleared;
+    }
+    if (!dialog && !stepped && open) continue;
+    changed = true;
+    // The next still replaces this one after a short gap. Wait it out so the
+    // caller reads the new scene, not the empty moment between them.
+    DWORD settle = GetTickCount();
+    while (GetTickCount() - settle < 500) {
+      if (DialogPtr() || CurrentModal() != ModalKind::None || GameMovieOpen()) break;
+      Sleep(20);
+    }
+    break;
+  }
+  if (changed) ++g_film_epoch;
+  GameLog("film click changed=%d at=%ld,%ld depth=%d scene=%d", changed ? 1 : 0, pt.x, pt.y, depth, scene);
+  return OkJson(std::string("\"index\":0,\"text\":") + JsonString("继续") + ",\"via\":\"game\",\"changed\":" +
+                (changed ? "true" : "false"));
+}
 
 bool GameUnregisteredLock() {
   return MatchLive() && CityWindowLocked() && LockedCityWindow() < 0 && CurrentModal() == ModalKind::None &&

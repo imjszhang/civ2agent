@@ -377,13 +377,32 @@ constexpr int kMenuTaxRate = 0x201;
 // Kingdom > 革命(R), shortcut Shift+R. Id read from the live menu on this exe.
 constexpr int kMenuRevolt = 222;
 
-// Wonder and throne movies. 0x5DD920 creates an MSMMWindow and stores it here.
-// The window procedure 0x5CD149 steps one scene when the left button is down
-// (GetAsyncKeyState(VK_LBUTTON) via 0x5BD4CD). A click outside the film does nothing.
-// 0x5DDA53 / the following player store MCI device ids while a clip is open.
+// Wonder movies that really show a window. 0x5DD8A0 creates an MSMMWindow at
+// startup (style 0, so it stays hidden) and stores it here. Only a visible
+// window is a film. 0x5CD149 is a scrollbar handler, not the scene step.
+// 0x5DDA53 opens a MIDI sequencer and stores MCI device ids; those ids are
+// not the still picture.
 constexpr std::uint32_t kVaMovieWindow = 0x006E4FF8;
 constexpr std::uint32_t kVaMovieDevice = 0x006389D4;
 constexpr std::uint32_t kVaMovieDevice2 = 0x006389D8;
+// Click-to-continue stills (throne FUN_0044d296, and the same wait in other
+// fullscreen pictures). FUN_005c61b0 pushes the view and loops while
+// *(view+0x8c) != 0. The depth at 0x00637EA8 is -1 when nothing is waiting.
+// The handler stored at view+0xa4 is the jmp stub 0x403585 (to 0x59C301).
+// A dialog, the tax window or the city window can sit on this stack too;
+// those keep their own detectors.
+constexpr std::uint32_t kVaModalDepth = 0x00637EA8;  // int, -1 idle, else 0..14
+constexpr std::uint32_t kVaModalStack = 0x00637EB0;  // void*[16], index == depth
+constexpr int kModalRunning = 0x8C;
+constexpr int kModalHandler = 0xA4;
+constexpr std::uint32_t kVaClickContinue = 0x00403585;
+// The throne view object while a palace still is on screen. FUN_0044ce16
+// stores it; the wait object is this + 0x54C. Cleared when the view is gone.
+// The click handler at +0xA4 is installed only when byte 0x655B02 > 2, so a
+// chieftain game leaves that field 0 and the pointer is the signal.
+constexpr std::uint32_t kVaThroneView = 0x00626810;
+constexpr int kThroneModal = 0x54C;
+constexpr int kThroneScene = 0x1924;
 // @PRODUCTION record ids: unit type, 0x3E + improvement, 0x65 + wonder (= 0x3E + 39 + wonder).
 constexpr int kProductionImprovementBase = 0x3E;
 

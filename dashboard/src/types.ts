@@ -18,6 +18,9 @@ export type GameView = {
   civ: CivBrief | null;
   cities: CityBrief[];
   units: UnitBrief[];
+  foreignUnits: ForeignUnitBrief[];
+  foreignCities: ForeignCityBrief[];
+  tiles: TileBrief[];
   diplomacy: DiplomacyBrief[];
   dialog: DialogBrief | null;
   cityWindow: { name?: string; modal?: boolean } | null;
@@ -54,6 +57,29 @@ export type UnitBrief = {
   y?: number;
   moves_left?: number;
   orders?: number;
+};
+
+export type ForeignUnitBrief = {
+  civ?: number;
+  name?: string;
+  x?: number;
+  y?: number;
+};
+
+export type ForeignCityBrief = {
+  owner?: number;
+  name?: string;
+  x?: number;
+  y?: number;
+  size?: number;
+};
+
+/** Explored square as the player last saw it. `t` and `f` are the protocol bytes. */
+export type TileBrief = {
+  x: number;
+  y: number;
+  t: number;
+  f: number;
 };
 
 export type DiplomacyBrief = {

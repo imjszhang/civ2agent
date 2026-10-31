@@ -8,6 +8,7 @@ import { Gate, whenIdle } from "./gate.js";
 import { bindAllowed, createMcpHandler, type McpDeps } from "./mcp.js";
 import { loadPlayTools } from "./play.js";
 import { foldUsage, mergeRun, runChanged } from "./project.js";
+import { retainActions, retainCommands, retainThoughts } from "./retain.js";
 import type { GameView, GatewayView, Piece, Snapshot } from "./types.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -34,7 +35,8 @@ export type RunningDashboard = {
 
 const emptyGame = (): GameView => ({
   connected: false, busy: false, reason: "还没有读到游戏", inGame: false, turn: null, year: null,
-  civ: null, cities: [], units: [], diplomacy: [], dialog: null, cityWindow: null, taxWindow: null,
+  civ: null, cities: [], units: [], foreignUnits: [], foreignCities: [], tiles: [],
+  diplomacy: [], dialog: null, cityWindow: null, taxWindow: null,
 });
 
 const types: Record<string, string> = {
@@ -90,9 +92,15 @@ export async function startDashboard(options: DashboardOptions): Promise<Running
         if (last) last.done = true;
       } else if (last && !last.done) last.text += piece.data.text;
       else snapshot.thoughts.push({ text: piece.data.text, done: false });
-    } else if (piece.event === "action") snapshot.actions.push(piece.data);
-    else if (piece.event === "prompt" && !snapshot.prompt) snapshot.prompt = piece.data.text;
-    else if (piece.event === "command") snapshot.commands.push(piece.data);
+      retainThoughts(snapshot.thoughts);
+    } else if (piece.event === "action") {
+      snapshot.actions.push(piece.data);
+      retainActions(snapshot.actions);
+    } else if (piece.event === "prompt" && !snapshot.prompt) snapshot.prompt = piece.data.text;
+    else if (piece.event === "command") {
+      snapshot.commands.push(piece.data);
+      retainCommands(snapshot.commands);
+    }
     else if (piece.event === "usage") {
       if (!snapshot.run) return;
       const usage = foldUsage(snapshot.run.adapter, snapshot.run.usage, piece.data);
@@ -177,14 +185,19 @@ export async function startDashboard(options: DashboardOptions): Promise<Running
     }
   }
 
+  function showGame(next: GameView) {
+    if (JSON.stringify(next) === JSON.stringify(snapshot.game)) return;
+    snapshot.game = next;
+    broadcast("game", next);
+  }
+
   async function followGame() {
     const next = await whenIdle(
       gate,
       () => readGame(options.python, options.ctl, snapshot.game.connected ? snapshot.game : null),
       reason => ({ ...snapshot.game, busy: true, reason }),
     );
-    snapshot.game = next;
-    broadcast("game", next);
+    showGame(next);
   }
 
   async function loops() {
@@ -196,8 +209,7 @@ export async function startDashboard(options: DashboardOptions): Promise<Running
         await followSession();
         if (now - lastGame >= 1000) { lastGame = now; await followGame(); }
       } catch (cause) {
-        snapshot.game = { ...snapshot.game, busy: true, reason: cause instanceof Error ? cause.message : "观察中断" };
-        broadcast("game", snapshot.game);
+        showGame({ ...snapshot.game, busy: true, reason: cause instanceof Error ? cause.message : "观察中断" });
       }
       await sleep(400);
     }

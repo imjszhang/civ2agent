@@ -15,6 +15,12 @@
     <section id="board">
       <h2>网关</h2>
       <div id="gateway" class="panel"></div>
+      <h2 class="next">地图</h2>
+      <p class="hint">已探索的格子。点一格看地形。</p>
+      <div id="map" class="panel map-panel">
+        <canvas id="map-canvas"></canvas>
+        <p id="map-detail">还没有探索到的格子</p>
+      </div>
       <h2 class="next">局面</h2>
       <div id="game" class="panel"></div>
     </section>
@@ -26,10 +32,13 @@
         <pre id="prompt"></pre>
       </details>
       <h3>思考</h3>
+      <p class="hint">只显示最近的记录</p>
       <div id="thoughts" class="panel stream"></div>
       <h3>行动</h3>
+      <p class="hint">只显示最近的记录</p>
       <ol id="actions" class="panel stream"></ol>
       <h3>命令</h3>
+      <p class="hint">只显示最近的记录</p>
       <ol id="commands" class="panel stream"></ol>
     </section>
   </main>

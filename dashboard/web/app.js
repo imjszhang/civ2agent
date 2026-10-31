@@ -69,9 +69,11 @@ function renderGateway() {
 const TERRAIN = ["沙漠", "平原", "草原", "森林", "丘陵", "山脉", "冻土", "冰川", "沼泽", "丛林", "海洋"];
 const SPECIAL = ["绿洲", "小麦", "资源", "野味", "煤", "金", "野味", "石油", "香料", "宝石", "鱼"];
 const TERRAIN_COLOR = ["#c2a15a", "#d2c48a", "#7cb342", "#2e7d32", "#9e9a78", "#757069", "#d5ddd8", "#eef3f6", "#6d7a55", "#1b5e40", "#3d7ea6"];
-const MAP_CELL = 12;
-const MAP_PAD = 6;
-const mapGeom = { pad: MAP_PAD, cell: MAP_CELL, tiles: new Map() };
+// East is x + 2, south is y + 2. A tile is the same 2:1 diamond the game draws.
+const MAP_W = 20;
+const MAP_H = 10;
+const MAP_PAD = 12;
+const mapGeom = { pad: MAP_PAD, hw: MAP_W / 2, hh: MAP_H / 2, tiles: new Map() };
 let pickedKey = "";
 
 function tileParts(tile) {
@@ -119,16 +121,33 @@ function tileLine(tile, view) {
   return bits.join("　");
 }
 
+function tileCenter(x, y) {
+  return [mapGeom.pad + x * mapGeom.hw, mapGeom.pad + y * mapGeom.hh];
+}
+
+function fillDiamond(ctx, x, y) {
+  const [cx, cy] = tileCenter(x, y);
+  const hw = mapGeom.hw;
+  const hh = mapGeom.hh;
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - hh);
+  ctx.lineTo(cx + hw, cy);
+  ctx.lineTo(cx, cy + hh);
+  ctx.lineTo(cx - hw, cy);
+  ctx.closePath();
+  ctx.fill();
+}
+
 function tileFromEvent(ev) {
   const rect = mapCanvas.getBoundingClientRect();
-  const localX = ev.clientX - rect.left - mapGeom.pad;
-  const localY = ev.clientY - rect.top - mapGeom.pad;
-  const half = mapGeom.cell / 2;
-  let x = Math.round(localX / half);
-  let y = Math.round(localY / half);
+  const localX = ev.clientX - rect.left;
+  const localY = ev.clientY - rect.top;
+  let x = Math.round((localX - mapGeom.pad) / mapGeom.hw);
+  let y = Math.round((localY - mapGeom.pad) / mapGeom.hh);
   if (((x + y) & 1) !== 0) {
-    if (Math.abs(localX - x * half) <= Math.abs(localY - y * half)) x += localX > x * half ? 1 : -1;
-    else y += localY > y * half ? 1 : -1;
+    const [cx, cy] = tileCenter(x, y);
+    if (Math.abs(localX - cx) <= Math.abs(localY - cy) * (mapGeom.hw / mapGeom.hh)) x += localX > cx ? 1 : -1;
+    else y += localY > cy ? 1 : -1;
   }
   return mapGeom.tiles.get(`${x},${y}`) || null;
 }
@@ -151,8 +170,8 @@ function renderMap() {
     if (tile.x > maxX) maxX = tile.x;
     if (tile.y > maxY) maxY = tile.y;
   }
-  const width = Math.ceil((maxX + 2) * (MAP_CELL / 2)) + MAP_PAD * 2;
-  const height = Math.ceil((maxY + 2) * (MAP_CELL / 2)) + MAP_PAD * 2;
+  const width = MAP_PAD + maxX * mapGeom.hw + mapGeom.hw + MAP_PAD;
+  const height = MAP_PAD + maxY * mapGeom.hh + mapGeom.hh + MAP_PAD;
   const ratio = window.devicePixelRatio || 1;
   mapCanvas.style.width = `${width}px`;
   mapCanvas.style.height = `${height}px`;
@@ -161,31 +180,38 @@ function renderMap() {
   const ctx = mapCanvas.getContext("2d");
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
   ctx.clearRect(0, 0, width, height);
-  for (const tile of tiles) {
+  const ordered = [...tiles].sort((a, b) => a.y - b.y || a.x - b.x);
+  for (const tile of ordered) {
     const parts = tileParts(tile);
-    const px = MAP_PAD + tile.x * (MAP_CELL / 2);
-    const py = MAP_PAD + tile.y * (MAP_CELL / 2);
     ctx.fillStyle = parts.color;
-    ctx.fillRect(px, py, MAP_CELL - 1, MAP_CELL - 1);
+    fillDiamond(ctx, tile.x, tile.y);
+    const [cx, cy] = tileCenter(tile.x, tile.y);
     if (parts.river) {
-      ctx.fillStyle = "#8ec8e8";
-      ctx.fillRect(px, py + MAP_CELL - 4, MAP_CELL - 1, 2);
+      ctx.strokeStyle = "#8ec8e8";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(cx - mapGeom.hw / 2, cy);
+      ctx.lineTo(cx + mapGeom.hw / 2, cy);
+      ctx.stroke();
     }
     if (parts.works.includes("铁路") || parts.works.includes("道路")) {
-      ctx.fillStyle = "#5a4030";
-      ctx.fillRect(px + 2, py + MAP_CELL / 2 - 1, MAP_CELL - 5, 2);
+      ctx.strokeStyle = parts.works.includes("铁路") ? "#3a3530" : "#6b5344";
+      ctx.lineWidth = parts.works.includes("铁路") ? 2 : 1;
+      ctx.beginPath();
+      ctx.moveTo(cx - mapGeom.hw + 3, cy);
+      ctx.lineTo(cx + mapGeom.hw - 3, cy);
+      ctx.stroke();
     }
   }
-  const mark = (x, y, color, inset) => {
+  const mark = (x, y, color) => {
     ctx.fillStyle = color;
-    const px = MAP_PAD + x * (MAP_CELL / 2);
-    const py = MAP_PAD + y * (MAP_CELL / 2);
-    ctx.fillRect(px + inset, py + inset, MAP_CELL - 1 - inset * 2, MAP_CELL - 1 - inset * 2);
+    const [cx, cy] = tileCenter(x, y);
+    ctx.fillRect(cx - 2, cy - 2, 4, 4);
   };
-  for (const city of view.foreignCities || []) if (city.x !== undefined) mark(city.x, city.y, "#f4e2b0", 3);
-  for (const city of view.cities || []) if (city.x !== undefined) mark(city.x, city.y, "#1c1915", 3);
-  for (const unit of view.foreignUnits || []) if (unit.x !== undefined) mark(unit.x, unit.y, "#8d2a2a", 4);
-  for (const unit of view.units || []) if (unit.x !== undefined) mark(unit.x, unit.y, "#f7f4ee", 4);
+  for (const city of view.foreignCities || []) if (city.x !== undefined) mark(city.x, city.y, "#f4e2b0");
+  for (const city of view.cities || []) if (city.x !== undefined) mark(city.x, city.y, "#1c1915");
+  for (const unit of view.foreignUnits || []) if (unit.x !== undefined) mark(unit.x, unit.y, "#8d2a2a");
+  for (const unit of view.units || []) if (unit.x !== undefined) mark(unit.x, unit.y, "#f7f4ee");
   const picked = mapGeom.tiles.get(pickedKey);
   mapDetail.textContent = picked ? tileLine(picked, view) : `已探索 ${tiles.length} 格。点一格看地形。`;
 }

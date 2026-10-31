@@ -35,7 +35,8 @@ export type RunningDashboard = {
 
 const emptyGame = (): GameView => ({
   connected: false, busy: false, reason: "还没有读到游戏", inGame: false, turn: null, year: null,
-  civ: null, cities: [], units: [], diplomacy: [], dialog: null, cityWindow: null, taxWindow: null,
+  civ: null, cities: [], units: [], foreignUnits: [], foreignCities: [], tiles: [],
+  diplomacy: [], dialog: null, cityWindow: null, taxWindow: null,
 });
 
 const types: Record<string, string> = {

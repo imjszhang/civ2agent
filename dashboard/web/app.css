@@ -37,4 +37,7 @@ li { margin: 4px 0; }
 .thought.open { border-left: 3px solid #c4a574; padding-left: 8px; }
 details { margin-top: 10px; }
 #prompt { white-space: pre-wrap; max-height: 160px; overflow: auto; }
+.map-panel { overflow: auto; max-height: 520px; }
+#map-canvas { display: block; cursor: crosshair; }
+#map-detail { margin: 8px 0 0; min-height: 1.4em; }
 @media (max-width: 860px) { main { grid-template-columns: 1fr; } }

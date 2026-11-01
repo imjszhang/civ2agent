@@ -24,7 +24,12 @@ export type GameView = {
   diplomacy: DiplomacyBrief[];
   dialog: DialogBrief | null;
   cityWindow: { name?: string; modal?: boolean } | null;
-  taxWindow: { tax_rate?: number; science_rate?: number; lux_rate?: number } | null;
+  taxWindow: { tax_rate?: number; science_rate?: number; lux_rate?: number; max_rate?: number } | null;
+  /** Unit index the game has selected, or null. */
+  activeUnit: number | null;
+  /** Points that make one movement on the unit panel. */
+  moveUnit: number | null;
+  notice: { title?: string; text?: string } | null;
 };
 
 export type CivBrief = {
@@ -39,9 +44,12 @@ export type CivBrief = {
   beakers?: number;
   research_cost?: number;
   government?: number;
+  future_techs?: number;
+  techs?: number[];
 };
 
 export type CityBrief = {
+  index?: number;
   name?: string;
   x?: number;
   y?: number;
@@ -49,14 +57,21 @@ export type CityBrief = {
   building_name?: string;
   food?: number;
   shields?: number;
+  improvements?: number[];
 };
 
 export type UnitBrief = {
+  index?: number;
   name?: string;
   x?: number;
   y?: number;
   moves_left?: number;
   orders?: number;
+  hp_lost?: number;
+  veteran?: boolean;
+  att?: number;
+  def?: number;
+  home?: number;
 };
 
 export type ForeignUnitBrief = {
@@ -64,6 +79,10 @@ export type ForeignUnitBrief = {
   name?: string;
   x?: number;
   y?: number;
+  orders?: number;
+  health?: number;
+  stacked?: boolean;
+  automated?: boolean;
 };
 
 export type ForeignCityBrief = {
@@ -84,6 +103,7 @@ export type TileBrief = {
 
 export type DiplomacyBrief = {
   civ?: number;
+  name?: string;
   status?: string;
   embassy?: boolean;
 };

@@ -5,6 +5,7 @@ const EMPTY: GameView = {
   connected: false, busy: false, reason: "游戏没有开", inGame: false, turn: null, year: null,
   civ: null, cities: [], units: [], foreignUnits: [], foreignCities: [], tiles: [],
   diplomacy: [], dialog: null, cityWindow: null, taxWindow: null,
+  activeUnit: null, moveUnit: null, notice: null,
 };
 
 function call(python: string, ctl: string, args: string[], timeoutMs: number): Promise<Record<string, unknown>> {
@@ -23,7 +24,7 @@ export async function readGame(python: string, ctl: string, previous: GameView |
     if (unreachable && previous?.connected) return { ...previous, busy: true, reason: String(status.reason ?? "游戏正忙") };
     return { ...EMPTY, reason: String(status.reason ?? EMPTY.reason) };
   }
-  const state = await call(python, ctl, ["state", "--only", "civ,cities,units,foreign_units,foreign_cities,tiles,diplomacy,dialog"], 12000);
+  const state = await call(python, ctl, ["state", "--only", "civ,cities,units,foreign_units,foreign_cities,tiles,diplomacy,city_window,tax_window,notice,dialog"], 12000);
   if (state.ok !== true) {
     return {
       ...EMPTY, connected: true, busy: true, inGame: status.in_game === true,
@@ -46,5 +47,8 @@ export async function readGame(python: string, ctl: string, previous: GameView |
     dialog: (state.dialog as DialogBrief) ?? null,
     cityWindow: (state.city_window as GameView["cityWindow"]) ?? null,
     taxWindow: (state.tax_window as GameView["taxWindow"]) ?? null,
+    activeUnit: typeof state.active_unit === "number" ? state.active_unit : null,
+    moveUnit: typeof state.move_unit === "number" ? state.move_unit : null,
+    notice: (state.notice as GameView["notice"]) ?? null,
   };
 }

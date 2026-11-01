@@ -66,12 +66,14 @@ function renderGateway() {
   }
 }
 
+const GOVERNMENT = ["无政府", "专制", "君主", "共产", "原教旨", "共和", "民主"];
+const ORDERS = { [-1]: "无命令", 0: "无命令", 1: "设防中", 2: "已设防", 3: "睡眠", 6: "灌溉" };
 const TERRAIN = ["沙漠", "平原", "草原", "森林", "丘陵", "山脉", "冻土", "冰川", "沼泽", "丛林", "海洋"];
 const SPECIAL = ["绿洲", "小麦", "资源", "野味", "煤", "金", "野味", "石油", "香料", "宝石", "鱼"];
 const TERRAIN_COLOR = ["#c2a15a", "#d2c48a", "#7cb342", "#2e7d32", "#9e9a78", "#757069", "#d5ddd8", "#eef3f6", "#6d7a55", "#1b5e40", "#3d7ea6"];
 // East is x + 2, south is y + 2. A tile is the same 2:1 diamond the game draws.
-const MAP_W = 20;
-const MAP_H = 10;
+const MAP_W = 32;
+const MAP_H = 16;
 const MAP_PAD = 12;
 const mapGeom = { pad: MAP_PAD, hw: MAP_W / 2, hh: MAP_H / 2, tiles: new Map() };
 let pickedKey = "";
@@ -100,13 +102,52 @@ function tileParts(tile) {
   };
 }
 
+function orderText(orders) {
+  if (orders === undefined || orders === null) return "";
+  return ORDERS[orders] || `命令 ${orders}`;
+}
+
+function movesText(left, moveUnit) {
+  if (left === undefined || left === null) return "";
+  if (!moveUnit) return String(left);
+  const whole = Math.floor(left / moveUnit);
+  const rem = left % moveUnit;
+  if (!rem) return String(whole);
+  return whole ? `${whole} ${rem}/${moveUnit}` : `${rem}/${moveUnit}`;
+}
+
+function builtCount(bits) {
+  if (!Array.isArray(bits)) return 0;
+  let count = 0;
+  for (const byte of bits) {
+    let value = byte || 0;
+    while (value) { count += value & 1; value >>= 1; }
+  }
+  return count;
+}
+
+function unitBits(unit, view, active) {
+  const bits = [];
+  if (active) bits.push("选中");
+  const order = orderText(unit.orders);
+  if (order) bits.push(order);
+  if (unit.veteran) bits.push("老兵");
+  if (unit.hp_lost) bits.push(`伤 ${unit.hp_lost}`);
+  if (unit.health !== undefined) bits.push(`血 ${unit.health}`);
+  if (unit.att !== undefined || unit.def !== undefined) bits.push(`攻 ${cell(unit.att)} 防 ${cell(unit.def)}`);
+  const moves = movesText(unit.moves_left, view?.moveUnit);
+  if (moves) bits.push(`移动 ${moves}`);
+  if (unit.stacked) bits.push("叠放");
+  return bits;
+}
+
 function occupants(x, y, view) {
   const here = item => item.x === x && item.y === y;
   const names = [];
-  for (const city of view.cities || []) if (here(city)) names.push(`${city.name || "城市"}（人口 ${cell(city.size)}）`);
+  for (const city of view.cities || []) if (here(city)) names.push(`${city.name || "城市"}（人口 ${cell(city.size)}，粮 ${cell(city.food)}，盾 ${cell(city.shields)}，建筑 ${builtCount(city.improvements)}）`);
   for (const city of view.foreignCities || []) if (here(city)) names.push(`${city.name || "外国城市"}（文明 ${cell(city.owner)}，人口 ${cell(city.size)}）`);
-  for (const unit of view.units || []) if (here(unit)) names.push(unit.name || "单位");
-  for (const unit of view.foreignUnits || []) if (here(unit)) names.push(`${unit.name || "外国单位"}（文明 ${cell(unit.civ)}）`);
+  for (const unit of view.units || []) if (here(unit)) names.push(`${unit.name || "单位"}（${unitBits(unit, view, unit.index === view.activeUnit).join("，")}）`);
+  for (const unit of view.foreignUnits || []) if (here(unit)) names.push(`${unit.name || "外国单位"}（文明 ${cell(unit.civ)}，${unitBits(unit, view, false).join("，")}）`);
   return names;
 }
 
@@ -194,6 +235,28 @@ function renderMap() {
       ctx.lineTo(cx + mapGeom.hw / 2, cy);
       ctx.stroke();
     }
+    if (parts.works.includes("农田")) {
+      ctx.fillStyle = "#d6e35a";
+      ctx.fillRect(cx - 4, cy - 2, 8, 4);
+    } else if (parts.works.includes("灌溉")) {
+      ctx.fillStyle = "#3aa0c8";
+      ctx.fillRect(cx - 5, cy - 1, 4, 3);
+    }
+    if (parts.works.includes("矿山")) {
+      ctx.fillStyle = "#3a342c";
+      ctx.fillRect(cx + 1, cy - 2, 4, 4);
+    }
+    if (parts.works.includes("要塞")) {
+      ctx.strokeStyle = "#f7f4ee";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(cx - 3, cy - 3, 6, 6);
+    }
+    if (parts.works.includes("污染")) {
+      ctx.fillStyle = "#c43b3b";
+      ctx.beginPath();
+      ctx.arc(cx, cy - 3, 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
     if (parts.works.includes("铁路") || parts.works.includes("道路")) {
       ctx.strokeStyle = parts.works.includes("铁路") ? "#3a3530" : "#6b5344";
       ctx.lineWidth = parts.works.includes("铁路") ? 2 : 1;
@@ -203,15 +266,41 @@ function renderMap() {
       ctx.stroke();
     }
   }
-  const mark = (x, y, color) => {
-    ctx.fillStyle = color;
+  const stamp = (x, y, text, fill) => {
     const [cx, cy] = tileCenter(x, y);
-    ctx.fillRect(cx - 2, cy - 2, 4, 4);
+    ctx.font = "12px Microsoft YaHei, Segoe UI, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "#f7f4ee";
+    ctx.strokeText(text, cx, cy + mapGeom.hh + 7);
+    ctx.fillStyle = fill;
+    ctx.fillText(text, cx, cy + mapGeom.hh + 7);
+    ctx.fillRect(cx - 3, cy - 3, 6, 6);
   };
-  for (const city of view.foreignCities || []) if (city.x !== undefined) mark(city.x, city.y, "#f4e2b0");
-  for (const city of view.cities || []) if (city.x !== undefined) mark(city.x, city.y, "#1c1915");
-  for (const unit of view.foreignUnits || []) if (unit.x !== undefined) mark(unit.x, unit.y, "#8d2a2a");
-  for (const unit of view.units || []) if (unit.x !== undefined) mark(unit.x, unit.y, "#f7f4ee");
+  const stacks = new Map();
+  const addStack = (x, y, name) => {
+    const key = `${x},${y}`;
+    if (!stacks.has(key)) stacks.set(key, []);
+    stacks.get(key).push(name || "单位");
+  };
+  for (const unit of view.foreignUnits || []) if (unit.x !== undefined) addStack(unit.x, unit.y, unit.name);
+  for (const unit of view.units || []) if (unit.x !== undefined) addStack(unit.x, unit.y, unit.name);
+  for (const [key, names] of stacks) {
+    const [x, y] = key.split(",").map(Number);
+    const counts = new Map();
+    for (const name of names) counts.set(name, (counts.get(name) || 0) + 1);
+    const text = [...counts].map(([name, count]) => count > 1 ? `${name}×${count}` : name).join(" ");
+    stamp(x, y, text, "#8d2a2a");
+  }
+  for (const city of view.foreignCities || []) {
+    if (city.x === undefined) continue;
+    stamp(city.x, city.y, `${city.name || "城市"} ${cell(city.size)}`, "#1a4f86");
+  }
+  for (const city of view.cities || []) {
+    if (city.x === undefined) continue;
+    stamp(city.x, city.y, `${city.name || "城市"} ${cell(city.size)}`, "#1c1915");
+  }
   const picked = mapGeom.tiles.get(pickedKey);
   mapDetail.textContent = picked ? tileLine(picked, view) : `已探索 ${tiles.length} 格。点一格看地形。`;
 }
@@ -244,10 +333,28 @@ function renderGame() {
   if (!view.connected || !view.inGame) return;
   const civ = view.civ || {};
   const brief = document.createElement("p");
-  brief.textContent = `${civ.name || ""} ${civ.leader || ""} ${civ.title || ""}　金钱 ${cell(civ.gold)}　税收 ${rate(civ.tax_rate)}　科学 ${rate(civ.science_rate)}　奢侈 ${rate(civ.lux_rate)}`;
+  const government = GOVERNMENT[civ.government] || "";
+  const techs = Array.isArray(civ.techs) ? civ.techs.length : null;
+  brief.textContent = `${civ.name || ""} ${civ.leader || ""} ${civ.title || ""}　${government}　金钱 ${cell(civ.gold)}　税收 ${rate(civ.tax_rate)}　科学 ${rate(civ.science_rate)}　奢侈 ${rate(civ.lux_rate)}${techs === null ? "" : `　科技 ${techs}`}`;
   const research = document.createElement("p");
   research.textContent = `研究 ${civ.research_name || "无"}　${cell(civ.beakers)} / ${cell(civ.research_cost)}`;
   game.append(brief, research);
+  if (view.notice && (view.notice.title || view.notice.text)) {
+    const note = document.createElement("p");
+    note.textContent = `${view.notice.title || "提示"}　${view.notice.text || ""}`;
+    game.append(note);
+  }
+  if (view.cityWindow) {
+    const windowLine = document.createElement("p");
+    windowLine.textContent = `城市窗口 ${view.cityWindow.name || ""}${view.cityWindow.modal ? "　等着关上" : ""}`;
+    game.append(windowLine);
+  }
+  if (view.taxWindow) {
+    const tax = view.taxWindow;
+    const windowLine = document.createElement("p");
+    windowLine.textContent = `税率窗口　税收 ${rate(tax.tax_rate)}　科学 ${rate(tax.science_rate)}　奢侈 ${rate(tax.lux_rate)}`;
+    game.append(windowLine);
+  }
   if (view.dialog) {
     const box = document.createElement("div");
     const title = document.createElement("strong");
@@ -262,9 +369,14 @@ function renderGame() {
     }
     game.append(box);
   }
-  if (view.cities.length) game.append(table(["城市", "人口", "位置", "生产"], view.cities, city => [city.name, city.size, `${city.x},${city.y}`, city.building_name]));
-  if (view.units.length) game.append(table(["单位", "位置", "移动", "命令"], view.units, unit => [unit.name, `${unit.x},${unit.y}`, unit.moves_left, unit.orders]));
-  if (view.diplomacy.length) game.append(table(["文明", "状态", "使馆"], view.diplomacy, row => [row.civ, row.status, row.embassy ? "有" : "无"]));
+  if (view.cities.length) game.append(table(["城市", "人口", "粮", "盾", "建筑", "生产"], view.cities, city => [city.name, city.size, city.food, city.shields, builtCount(city.improvements), city.building_name]));
+  if (view.units.length) game.append(table(["单位", "位置", "移动", "状态"], view.units, unit => [
+    unit.index === view.activeUnit ? `▶ ${unit.name || ""}` : unit.name,
+    `${unit.x},${unit.y}`,
+    movesText(unit.moves_left, view.moveUnit),
+    unitBits(unit, view, unit.index === view.activeUnit).join(" "),
+  ]));
+  if (view.diplomacy.length) game.append(table(["文明", "状态", "使馆"], view.diplomacy, row => [row.name || row.civ, row.status, row.embassy ? "有" : "无"]));
 }
 
 function effortText(value) {

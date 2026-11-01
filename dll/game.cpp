@@ -2705,7 +2705,8 @@ std::string GameSnapshotJson() {
     if (!status) continue;
     if (!first) out += ',';
     first = false;
-    out += std::string("{\"civ\":") + std::to_string(i) + ",\"status\":" + JsonString(status) +
+    out += std::string("{\"civ\":") + std::to_string(i) + ",\"name\":" + JsonString(CivText(kVaCivName, i)) +
+           ",\"status\":" + JsonString(status) +
            ",\"embassy\":" + ((t & kTreatyEmbassy) ? "true" : "false") + "}";
   }
   out += "],\"city_window\":" + CityWindowJson();

@@ -181,6 +181,7 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(code, 0)
         context = (folder / "agent" / "context.md").read_text(encoding="utf-8")
         self.assertIn("写 spec.json 并开局", context)
+        self.assertIn("存档时的局面", context)
         self.assertTrue((folder / "agent" / "playbook.md").exists())
         code, out = run(["record-run", str(folder), json.dumps({"segment": 1, "status": "completed"})])
         self.assertEqual((code, out["segments"]), (0, 1))
@@ -201,6 +202,71 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual((code, out["error"]), (1, "illegal"))
         code, out = run(["list"])
         self.assertEqual((code, out["games"]), (0, []))
+
+    def test_context_without_a_game_uses_the_saved_turn(self):
+        code, out = run(["new", "--request", "从存档看局面", "--id", "saved screen"])
+        folder = Path(out["dir"])
+        line = {"turn": 4, "year": -3920, "gold": 40, "tax": 6, "science": 4, "lux": 0,
+                "government": 2, "research": "字母", "techs": 3, "units": 2,
+                "cities": [{"name": "罗马", "size": 2, "building": "民兵"}],
+                "foreign_cities": 1,
+                "diplomacy": [{"civ": 5, "name": "美国人", "status": "peace", "embassy": False}]}
+        (folder / "turns.jsonl").write_text(json.dumps(line, ensure_ascii=False) + "\n", encoding="utf-8")
+        original = session.call
+        session.call = lambda payload, connect_s=10.0: {"ok": False, "error": "not_connected", "reason": "没开"}
+        try:
+            code, out = run(["context", str(folder), "--goal", "从存档看"])
+        finally:
+            session.call = original
+        self.assertEqual(code, 0)
+        text = (folder / "agent" / "context.md").read_text(encoding="utf-8")
+        self.assertIn("从存档看", text)
+        self.assertIn("存档时的局面", text)
+        self.assertIn("罗马", text)
+        self.assertIn("民兵", text)
+        self.assertIn("60%", text)
+        self.assertIn("美国人 和平 无使馆", text)
+        self.assertIn("存档行里没有", text)
+
+    def test_context_uses_the_live_screen_without_the_map(self):
+        code, out = run(["new", "--request", "看当前画面", "--id", "live screen"])
+        folder = Path(out["dir"])
+        live = {
+            "ok": True, "in_game": True, "turn": 12, "year": 100, "active_unit": 3, "move_unit": 3,
+            "civ": {"name": "罗马人", "leader": "测试员", "title": "大帝", "government": 2, "gold": 80,
+                    "tax_rate": 5, "science_rate": 5, "lux_rate": 0, "research_name": "货币",
+                    "beakers": 10, "research_cost": 40, "techs": [1, 2]},
+            "cities": [{"name": "罗马", "size": 3, "food": 17, "shields": 9, "building_name": "战士"}],
+            "units": [{"index": 3, "name": "战士", "x": 10, "y": 12, "moves_left": 3, "orders": 2}],
+            "foreign_units": [{"civ": 5, "name": "弓箭手", "x": 20, "y": 14}],
+            "foreign_cities": [{"owner": 5, "name": "华盛顿", "x": 16, "y": 4, "size": 2}],
+            "diplomacy": [{"civ": 5, "name": "美国人", "status": "peace", "embassy": True}],
+            "dialog": {"title": "研究", "text": "选一项", "options": [{"text": "货币"}]},
+            "city_window": None, "tax_window": None, "notice": None,
+            "tiles": [{"x": 0, "y": 0, "t": 1, "f": 0}],
+        }
+
+        def fake(payload, connect_s=10.0):
+            if payload.get("op") == "hello":
+                return {"ok": True, "in_game": True}
+            if payload.get("op") == "snapshot":
+                return live
+            return {"ok": False, "error": "not_connected"}
+
+        original = session.call
+        session.call = fake
+        try:
+            code, out = run(["context", str(folder), "--goal", "接着玩"])
+        finally:
+            session.call = original
+        self.assertEqual(code, 0)
+        text = (folder / "agent" / "context.md").read_text(encoding="utf-8")
+        self.assertIn("接着玩", text)
+        self.assertIn("| 罗马 | 3 | 17 | 9 | 战士 |", text)
+        self.assertIn("| 选中 战士 | 10,12 | 1 | 已设防 |", text)
+        self.assertIn("10 / 40", text)
+        self.assertNotIn("存档时的局面", text)
+        self.assertNotIn("tiles", text)
 
 
 if __name__ == "__main__":

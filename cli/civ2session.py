@@ -531,6 +531,176 @@ def year_text(year):
     return f"公元前 {-year} 年" if year < 0 else f"公元 {year} 年"
 
 
+# Same names the observation page uses.
+GOVERNMENTS = ["无政府", "专制", "君主", "共产", "原教旨", "共和", "民主"]
+ORDERS = {-1: "无命令", 0: "无命令", 1: "设防中", 2: "已设防", 3: "睡眠", 6: "灌溉"}
+DIPLOMACY = {"war": "战争", "ceasefire": "停火", "peace": "和平", "alliance": "同盟", "none": "无"}
+SCREEN_ONLY = ("civ", "cities", "units", "foreign_units", "foreign_cities", "diplomacy",
+               "city_window", "tax_window", "notice", "dialog")
+
+
+def government_text(value):
+    if isinstance(value, int) and 0 <= value < len(GOVERNMENTS):
+        return GOVERNMENTS[value]
+    return "-" if value is None else str(value)
+
+
+def rate_text(value):
+    return "-" if value is None else f"{value * 10}%"
+
+
+def order_text(orders):
+    if orders is None:
+        return "-"
+    return ORDERS.get(orders, str(orders))
+
+
+def moves_text(left, move_unit):
+    if left is None:
+        return "-"
+    if not move_unit:
+        return str(left)
+    whole, rem = divmod(int(left), int(move_unit))
+    if not rem:
+        return str(whole)
+    return f"{whole} {rem}/{move_unit}" if whole else f"{rem}/{move_unit}"
+
+
+def diplomacy_text(row):
+    who = row.get("name") or row.get("civ")
+    status = DIPLOMACY.get(row.get("status"), row.get("status") or "-")
+    embassy = "有使馆" if row.get("embassy") else "无使馆"
+    return f"{who} {status} {embassy}"
+
+
+def city_names(cities):
+    if not cities:
+        return "-"
+    return "、".join(f"{c.get('name') or '-'} {c.get('size') if c.get('size') is not None else '-'}" for c in cities)
+
+
+def live_screen():
+    """The observation page's picture, without the explored map. None when the
+    game is not in a match; a failed read is not an error for context.md."""
+    status = call({"op": "hello"}, connect_s=2)
+    if not status.get("ok") or not status.get("in_game"):
+        return None
+    state = call({"op": "snapshot"}, connect_s=10)
+    if not state.get("ok") or not state.get("in_game"):
+        return None
+    keep = set(SCREEN_ONLY) | {"ok", "in_game", "turn", "year", "active_unit", "move_unit"}
+    return {k: v for k, v in state.items() if k in keep}
+
+
+def screen_lines(state):
+    """The same screen the observation page shows, as markdown."""
+    lines = ["# 局面", ""]
+    dialog = state.get("dialog")
+    if dialog:
+        lines += [f"对话框：{dialog.get('title') or '对话框'}", "", dialog.get("text") or "", ""]
+        for option in dialog.get("options") or []:
+            mark = "（不可选）" if option.get("disabled") else ""
+            lines.append(f"- {option.get('text') or '-'}{mark}")
+        lines.append("")
+    notice = state.get("notice")
+    if notice and (notice.get("title") or notice.get("text")):
+        lines += [f"提示：{notice.get('title') or '提示'} {notice.get('text') or ''}", ""]
+    city = state.get("city_window")
+    if city:
+        waiting = "，等着关上" if city.get("modal") else ""
+        lines += [f"城市窗口：{city.get('name') or ''}{waiting}", ""]
+    tax = state.get("tax_window")
+    if tax:
+        lines += [f"税率窗口：税收 {rate_text(tax.get('tax_rate'))}，科学 {rate_text(tax.get('science_rate'))}，"
+                  f"奢侈 {rate_text(tax.get('lux_rate'))}", ""]
+    civ = state.get("civ") or {}
+    techs = civ.get("techs")
+    tech_count = len(techs) if isinstance(techs, list) else None
+    lines += [
+        f"{civ.get('name') or '-'} {civ.get('leader') or '-'} {civ.get('title') or '-'}，"
+        f"{government_text(civ.get('government'))}，金钱 {civ.get('gold') if civ.get('gold') is not None else '-'}，"
+        f"税收 {rate_text(civ.get('tax_rate'))}，科学 {rate_text(civ.get('science_rate'))}，"
+        f"奢侈 {rate_text(civ.get('lux_rate'))}"
+        + (f"，科技 {tech_count}" if tech_count is not None else ""),
+        f"研究 {civ.get('research_name') or '无'}　{civ.get('beakers') if civ.get('beakers') is not None else '-'} / "
+        f"{civ.get('research_cost') if civ.get('research_cost') is not None else '-'}",
+        "",
+    ]
+    cities = state.get("cities") or []
+    if cities:
+        lines += ["| 城市 | 人口 | 粮 | 盾 | 生产 |", "|---|---|---|---|---|"]
+        for city in cities:
+            lines.append(f"| {city.get('name') or '-'} | {city.get('size') if city.get('size') is not None else '-'} | "
+                         f"{city.get('food') if city.get('food') is not None else '-'} | "
+                         f"{city.get('shields') if city.get('shields') is not None else '-'} | "
+                         f"{city.get('building_name') or '-'} |")
+        lines.append("")
+    units = state.get("units") or []
+    active = state.get("active_unit")
+    move_unit = state.get("move_unit")
+    if units:
+        lines += ["| 单位 | 位置 | 移动 | 命令 |", "|---|---|---|---|"]
+        for unit in units:
+            name = unit.get("name") or "-"
+            if active not in (None, -1) and unit.get("index") == active:
+                name = f"选中 {name}"
+            lines.append(f"| {name} | {unit.get('x')},{unit.get('y')} | "
+                         f"{moves_text(unit.get('moves_left'), move_unit)} | {order_text(unit.get('orders'))} |")
+        lines.append("")
+    diplomacy = state.get("diplomacy") or []
+    if diplomacy:
+        lines += ["| 文明 | 状态 | 使馆 |", "|---|---|---|"]
+        for row in diplomacy:
+            lines.append(f"| {row.get('name') or row.get('civ')} | "
+                         f"{DIPLOMACY.get(row.get('status'), row.get('status') or '-')} | "
+                         f"{'有' if row.get('embassy') else '无'} |")
+        lines.append("")
+    foreign_cities = state.get("foreign_cities") or []
+    if foreign_cities:
+        lines += ["| 外国城市 | 所属 | 位置 | 人口 |", "|---|---|---|---|"]
+        for city in foreign_cities:
+            lines.append(f"| {city.get('name') or '-'} | {city.get('owner') if city.get('owner') is not None else '-'} | "
+                         f"{city.get('x')},{city.get('y')} | {city.get('size') if city.get('size') is not None else '-'} |")
+        lines.append("")
+    foreign_units = state.get("foreign_units") or []
+    if foreign_units:
+        lines += ["| 外国单位 | 所属 | 位置 |", "|---|---|---|"]
+        for unit in foreign_units:
+            lines.append(f"| {unit.get('name') or '-'} | {unit.get('civ') if unit.get('civ') is not None else '-'} | "
+                         f"{unit.get('x')},{unit.get('y')} |")
+        lines.append("")
+    return lines
+
+
+def saved_screen_lines(turn):
+    """What the last checkpoint stored. Not the live screen."""
+    lines = ["# 局面", "", "下面是存档时的局面，不是当前画面。", ""]
+    if not turn:
+        lines += ["存档行里没有单位位置、烧杯和对话框。", ""]
+        return lines
+    lines += [
+        f"金钱 {turn.get('gold') if turn.get('gold') is not None else '-'}，"
+        f"{government_text(turn.get('government'))}，"
+        f"税收 {rate_text(turn.get('tax'))}，科学 {rate_text(turn.get('science'))}，"
+        f"奢侈 {rate_text(turn.get('lux'))}，科技 {turn.get('techs') if turn.get('techs') is not None else '-'}",
+        f"研究 {turn.get('research') or '无'}",
+        "",
+    ]
+    cities = turn.get("cities") or []
+    if cities:
+        lines += ["| 城市 | 人口 | 生产 |", "|---|---|---|"]
+        for city in cities:
+            lines.append(f"| {city.get('name') or '-'} | {city.get('size') if city.get('size') is not None else '-'} | "
+                         f"{city.get('building') or '-'} |")
+        lines.append("")
+    if turn.get("diplomacy"):
+        lines += ["外交：" + "；".join(diplomacy_text(row) for row in turn["diplomacy"]), ""]
+    if turn.get("foreign_cities") is not None:
+        lines += [f"看见的外国城市 {turn.get('foreign_cities')} 座。", ""]
+    lines += ["存档行里没有单位位置、烧杯和对话框。", ""]
+    return lines
+
+
 def write_brief(path, session):
     lines = [f"# {session['title']}", "", f"游戏局 {session['id']}，{session['created']} 建立。", ""]
     if session.get("request"):
@@ -794,12 +964,20 @@ def cmd_context(args):
     if session["status"] == "failed" and session.get("error"):
         lines[-1:-1] = [f"- 开局停在：{session['error']}"]
     recent = read_jsonl(path / "turns.jsonl")[-8:]
+    shown = live_screen()
+    lines += screen_lines(shown) if shown else saved_screen_lines(recent[-1] if recent else None)
     if recent:
-        lines += ["# 最近几回合", "", "| 回合 | 年份 | 金币 | 研究 | 单位 | 城市 |", "|---|---|---|---|---|---|"]
+        lines += ["# 最近几回合", "",
+                  "| 回合 | 年份 | 金币 | 税/科/奢 | 政体 | 研究 | 单位 | 城市 |",
+                  "|---|---|---|---|---|---|---|---|"]
         for t in recent:
-            lines.append(f"| {t.get('turn')} | {year_text(t.get('year'))} | {t.get('gold')} | {t.get('research') or '-'} "
-                         f"| {t.get('units')} | {len(t.get('cities') or [])} |")
+            rates = f"{rate_text(t.get('tax'))}/{rate_text(t.get('science'))}/{rate_text(t.get('lux'))}"
+            lines.append(f"| {t.get('turn')} | {year_text(t.get('year'))} | {t.get('gold')} | {rates} | "
+                         f"{government_text(t.get('government'))} | {t.get('research') or '-'} | "
+                         f"{t.get('units') if t.get('units') is not None else '-'} | {city_names(t.get('cities'))} |")
         lines.append("")
+        if shown and recent[-1].get("diplomacy"):
+            lines += ["存档时外交：" + "；".join(diplomacy_text(row) for row in recent[-1]["diplomacy"]), ""]
     runs = read_jsonl(path / "runs.jsonl")[-3:]
     if runs:
         lines += ["# 前几段", ""]

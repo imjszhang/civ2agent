@@ -129,7 +129,7 @@ void Pump() {
     g_running.reset();
   }
   if (g_running && !IsDone(g_running) && g_abort_on_dialog &&
-      (GameDialogOpen() || GameWindowModal() || GameModalScreenOpen() || GameUnregisteredLock())) {
+      (GameDialogOpen() || GameWindowModal() || GameModalScreenOpen() || GameMovieOpen() || GameUnregisteredLock())) {
     std::string resp;
     if (GameTakeModalAbort(resp)) {
       GameCancelPending();
@@ -158,7 +158,9 @@ void Pump() {
       // Inside a dialog's own loop a game command cannot run. Answer it with
       // the dialog now: left queued it would time out and run late, and
       // end_turn's wake-up Enter would confirm a dialog the agent never saw.
-      if (!GameDialogOpen() && !GameWindowModal() && !GameModalScreenOpen() && !GameUnregisteredLock()) return;
+      if (!GameDialogOpen() && !GameWindowModal() && !GameModalScreenOpen() && !GameMovieOpen() &&
+          !GameUnregisteredLock())
+        return;
       blocked_by_dialog = true;
     }
     job = g_queue.front();
@@ -206,10 +208,30 @@ std::string SystemDialogReply(const Job& job, const std::string& dialog) {
          "\"dialog\":" + dialog + "}";
 }
 
+// A wonder or throne still holds the game thread. Answer from this thread:
+// a queued command would sit until the click, and the click has to be sent
+// from here because the game thread is the one blocked in the wait.
+std::string FilmReply(const Job& job) {
+  if (job.op == "hello") return GameHelloJson();
+  if (job.op == "menu") return GameMenuJson();
+  if (job.op == "snapshot") return GameSnapshotJson();
+  if (job.op == "events") return GameEventsJson();
+  if (job.op == "act" && job.act.name == "respond") {
+    if (job.act.has_edit) return ErrJson("illegal", "这个窗口没有输入框");
+    bool next = job.act.text.empty() ? job.act.option == 0 : job.act.text == "继续";
+    if (!next) return ErrJson("illegal", "这个窗口只有「继续」");
+    return GameClickFilm();
+  }
+  std::string resp;
+  if (!GameTakeModalAbort(resp)) resp = ErrJson("modal_open", "奇观动画在等鼠标，用 respond 继续");
+  return resp;
+}
+
 LRESULT WINAPI DispatchHook(const MSG* msg) {
   ++g_depth;
   if (g_depth == 1 || g_depth > 1) Pump();
   LRESULT result = g_orig_dispatch(msg);
+  GameReleaseMovieClick();
   --g_depth;
   return result;
 }
@@ -526,6 +548,7 @@ void ServeLoop() {
           now_resp = "{\"ok\":false,\"error\":\"modal_open\",\"reason\":\"Windows 对话框还没准备好，再读一次\",\"dialog\":null}";
         else if (!sys.empty()) now_resp = SystemDialogReply(*job, sys);
         else if (job->act.windows) now_resp = ErrJson("no_dialog", "Windows 对话框已经关了，先用 dialog 看一下");
+        else if (GameMovieOpen()) now_resp = FilmReply(*job);
         if (!now_resp.empty()) {
           resp = WithId(job->id, now_resp) + "\n";
           DWORD wrote = 0;
@@ -543,6 +566,8 @@ void ServeLoop() {
           bool signaled = false;
           bool withdrawn = false;
           bool unready_hold = false;
+          bool film_hold = false;
+          bool film_finished = false;
           while (!signaled) {
             auto now = std::chrono::steady_clock::now();
             if (now >= deadline) break;
@@ -566,6 +591,36 @@ void ServeLoop() {
               lock.lock();
               break;
             }
+            // The turn command is already running and the game thread is
+            // inside the still, so it will not reach Pump to abort itself.
+            if (sys.empty() && GameMovieOpen()) {
+              if (Withdraw(job)) {
+                withdrawn = true;
+                film_hold = true;
+                lock.lock();
+                break;
+              }
+              bool running = false;
+              {
+                std::lock_guard<std::mutex> qlock(g_qmu);
+                running = g_running == job;
+              }
+              if (running) {
+                std::string body;
+                if (GameTakeModalAbort(body)) {
+                  GameCancelPending();
+                  g_abort_on_dialog = false;
+                  FinishJob(job, WithId(job->id, body));
+                  film_finished = true;
+                }
+              }
+              if (film_finished) {
+                lock.lock();
+                break;
+              }
+              lock.lock();
+              continue;
+            }
             // Keys and clicks for the opening movie must not reach a file dialog.
             if (sys.empty()) GameWakeUi(job->op == "skip_intro");
             WakeGame();
@@ -577,15 +632,15 @@ void ServeLoop() {
             resp = unready_hold ? WithId(job->id,
                                         "{\"ok\":false,\"error\":\"modal_open\",\"reason\":\"Windows 对话框还没准备好，再读一次\","
                                         "\"dialog\":null}")
+                 : film_hold ? WithId(job->id, FilmReply(*job))
                                 : WithId(job->id, SystemDialogReply(*job, sys));
-          } else if (!signaled) {
+          } else if (film_finished || signaled) {
+            resp = job->abandoned ? WithId(job->id, ErrJson("timeout", "游戏线程没有在时限内完成命令"))
+                                  : job->response;
+          } else {
             job->abandoned = true;
             job->done = true;
             resp = WithId(job->id, ErrJson("timeout", "游戏线程没有在时限内完成命令"));
-          } else if (job->abandoned) {
-            resp = WithId(job->id, ErrJson("timeout", "游戏线程没有在时限内完成命令"));
-          } else {
-            resp = job->response;
           }
         }
         resp.push_back('\n');

@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
 """Launch via Civ2UIA, inject civ2agent, and require a hello response."""
 
+import importlib.util
 import json
 import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-LAUNCH = ROOT / "civ2agent" / "build" / "bin" / "civ2agent-launch.exe"
-CLI = ROOT / "civ2agent" / "cli" / "civ2ctl.py"
+AGENT = Path(__file__).resolve().parents[1]
+LAUNCH = AGENT / "build" / "bin" / "civ2agent-launch.exe"
+CLI = AGENT / "cli" / "civ2ctl.py"
+_spec = importlib.util.spec_from_file_location("civ2ctl", CLI)
+_ctl = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_ctl)
+try:
+    ROOT = _ctl.game_root()
+except _ctl.GamePathError as exc:
+    raise SystemExit(str(exc)) from exc
 
 
 def civ2_running():

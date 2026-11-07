@@ -112,14 +112,18 @@ class Files(unittest.TestCase):
         root = Path(self.tmp.name)
         self.game = root / "game"
         self.game.mkdir()
+        (self.game / "civ2.exe").write_bytes(b"")
         self.dir = root / "games" / "g1"
         (self.dir / "saves").mkdir(parents=True)
-        self.old_root = session.GAME_ROOT
-        session.GAME_ROOT = self.game
+        self.old_game = os.environ.get("CIV2AGENT_GAME")
+        os.environ["CIV2AGENT_GAME"] = str(self.game)
         os.environ["CIV2AGENT_GAMES_DIR"] = str(root / "games")
 
     def tearDown(self):
-        session.GAME_ROOT = self.old_root
+        if self.old_game is None:
+            os.environ.pop("CIV2AGENT_GAME", None)
+        else:
+            os.environ["CIV2AGENT_GAME"] = self.old_game
         del os.environ["CIV2AGENT_GAMES_DIR"]
         self.tmp.cleanup()
 

@@ -27,6 +27,117 @@ bool Exists(const std::wstring& path) {
   return attr != INVALID_FILE_ATTRIBUTES;
 }
 
+std::wstring Utf8ToWide(const std::string& text) {
+  if (text.empty()) return L"";
+  int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0);
+  if (n <= 0) return L"";
+  std::wstring out(n, 0);
+  MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), out.data(), n);
+  return out;
+}
+
+bool ReadFileBytes(const std::wstring& path, std::string* out) {
+  HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                            nullptr);
+  if (file == INVALID_HANDLE_VALUE) return false;
+  DWORD size = GetFileSize(file, nullptr);
+  if (size == INVALID_FILE_SIZE || size > (1u << 20)) {
+    CloseHandle(file);
+    return false;
+  }
+  out->assign(size, '\0');
+  DWORD got = 0;
+  BOOL ok = size == 0 || ReadFile(file, out->data(), size, &got, nullptr);
+  CloseHandle(file);
+  if (!ok) return false;
+  out->resize(got);
+  if (out->size() >= 3 && static_cast<unsigned char>((*out)[0]) == 0xEF &&
+      static_cast<unsigned char>((*out)[1]) == 0xBB && static_cast<unsigned char>((*out)[2]) == 0xBF)
+    out->erase(0, 3);
+  return true;
+}
+
+// The "game" string in game.json. Only that one key is read.
+std::wstring GameFromJson(const std::string& text) {
+  auto key = text.find("\"game\"");
+  if (key == std::string::npos) return L"";
+  auto colon = text.find(':', key + 6);
+  if (colon == std::string::npos) return L"";
+  auto quote = text.find('"', colon + 1);
+  if (quote == std::string::npos) return L"";
+  std::string value;
+  for (size_t i = quote + 1; i < text.size(); ++i) {
+    unsigned char c = static_cast<unsigned char>(text[i]);
+    if (c == '"') return Utf8ToWide(value);
+    if (c != '\\') {
+      value.push_back(static_cast<char>(c));
+      continue;
+    }
+    if (++i >= text.size()) return L"";
+    char n = text[i];
+    if (n == 'u') {
+      if (i + 4 >= text.size()) return L"";
+      int cp = 0;
+      for (int k = 0; k < 4; ++k) {
+        char h = text[++i];
+        cp <<= 4;
+        if (h >= '0' && h <= '9') cp += h - '0';
+        else if (h >= 'a' && h <= 'f') cp += h - 'a' + 10;
+        else if (h >= 'A' && h <= 'F') cp += h - 'A' + 10;
+        else return L"";
+      }
+      if (cp < 0x80) value.push_back(static_cast<char>(cp));
+      else if (cp < 0x800) {
+        value.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+        value.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+      } else {
+        value.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+        value.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        value.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+      }
+    } else if (n == '\\' || n == '/' || n == '"') {
+      value.push_back(n);
+    } else {
+      return L"";
+    }
+  }
+  return L"";
+}
+
+std::wstring FindFileUp(const std::wstring& start, const wchar_t* name, int limit) {
+  std::wstring dir = start;
+  for (int i = 0; i < limit; ++i) {
+    std::wstring file = dir + L"\\" + name;
+    if (Exists(file)) return file;
+    std::wstring up = Parent(dir);
+    if (up == dir) break;
+    dir = up;
+  }
+  return L"";
+}
+
+// The directory named in game.json, or empty when no file is found.
+// A file that cannot be read sets *broken and returns empty.
+std::wstring ConfiguredGame(const std::wstring& start, bool* broken) {
+  *broken = false;
+  std::wstring file = FindFileUp(start, L"game.json", 6);
+  if (file.empty()) return L"";
+  std::string bytes;
+  if (!ReadFileBytes(file, &bytes)) {
+    wprintf(L"game.json 读不了：%ls\n", file.c_str());
+    *broken = true;
+    return L"";
+  }
+  std::wstring game = GameFromJson(bytes);
+  if (game.empty()) {
+    wprintf(L"game.json 须有 \"game\"：civ2.exe 所在目录\n");
+    *broken = true;
+    return L"";
+  }
+  if (game.find(L':') == std::wstring::npos && game.rfind(L"\\\\", 0) != 0) game = Parent(file) + L"\\" + game;
+  return game;
+}
+
 std::wstring FindGameDir(const std::wstring& start) {
   std::wstring dir = start;
   for (int i = 0; i < 6; ++i) {
@@ -134,9 +245,21 @@ int wmain(int argc, wchar_t** argv) {
   for (int i = 1; i < argc; ++i) {
     if (wcscmp(argv[i], L"--game") == 0 && i + 1 < argc) game = argv[++i];
   }
-  if (game.empty()) game = FindGameDir(ExeDir());
   if (game.empty()) {
-    wprintf(L"找不到 civ2.exe。可用 --game 指定安装目录。\n");
+    wchar_t env[32768] = {};
+    DWORD n = GetEnvironmentVariableW(L"CIV2AGENT_GAME", env, 32768);
+    if (n > 0 && n < 32768) game = env;
+  }
+  bool broken = false;
+  if (game.empty()) game = ConfiguredGame(ExeDir(), &broken);
+  if (game.empty() && !broken) {
+    wchar_t cwd[MAX_PATH] = {};
+    if (GetCurrentDirectoryW(MAX_PATH, cwd)) game = ConfiguredGame(cwd, &broken);
+  }
+  if (broken) return 1;
+  if (game.empty()) game = FindGameDir(ExeDir());
+  if (game.empty() || !Exists(game + L"\\civ2.exe")) {
+    wprintf(L"找不到 civ2.exe。用 --game、环境变量 CIV2AGENT_GAME 或 game.json 指定安装目录。\n");
     return 1;
   }
   if (WaitNamedPipeW(L"\\\\.\\pipe\\civ2agent", 300)) {

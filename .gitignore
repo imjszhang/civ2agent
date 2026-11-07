@@ -11,3 +11,5 @@ runner/node_modules/
 dashboard/node_modules/
 # Harness targets: local executable paths and auth choices (copy targets.example.json)
 runner/targets.json
+# Civ2 install: local path to civ2.exe (copy game.example.json)
+game.json

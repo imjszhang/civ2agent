@@ -11,6 +11,7 @@ civ2agent/games/ for inspection.
 """
 
 import hashlib
+import importlib.util
 import json
 import subprocess
 import sys
@@ -21,7 +22,13 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 CLI = Path(__file__).resolve().parents[1] / "cli"
-GAME_ROOT = Path(__file__).resolve().parents[2]
+_spec = importlib.util.spec_from_file_location("civ2ctl", CLI / "civ2ctl.py")
+_ctl = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_ctl)
+try:
+    GAME_ROOT = _ctl.game_root()
+except _ctl.GamePathError as exc:
+    raise SystemExit(str(exc)) from exc
 SPEC = {"map_size": "small", "difficulty": "chieftain", "civs": 3, "barbarians": "villages", "rules": "standard",
         "gender": "male", "tribe": "罗马", "leader": "测试员", "id": "session-check"}
 failures = []

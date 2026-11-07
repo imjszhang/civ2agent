@@ -162,15 +162,21 @@ python civ2agent\cli\civ2ctl.py tools
 
 ## 启动
 
-在游戏目录旁启动：
+本项目可以放在任何目录，不必放在游戏安装目录里。游戏位置按这个顺序决定，那个目录里必须有 `civ2.exe`：
+
+1. 环境变量 `CIV2AGENT_GAME`
+2. 项目根目录的 `game.json`：`{"game": "D:\\路径\\Civilization II"}`。这个文件不进 git，从 `game.example.json` 复制后改路径。相对路径相对项目根目录。
+3. 项目的上一级目录里已经有 `civ2.exe` 时，仍用它。现在项目放在游戏目录里，所以不用设置也能启动。
+
+都没有则拒绝，并说明要设置。
 
 ```text
-civ2agent\build\bin\civ2agent-launch.exe
+civ2agent\build\bin\civ2agent-launch.exe --game <游戏目录>
 python civ2agent\cli\civ2ctl.py wait-ready
 python civ2agent\cli\civ2ctl.py skip-intro
 ```
 
-已有 `civ2.exe` 时只注入，不另开一局。管道已在则直接退出。
+`civ2session.py` 启动游戏时会把上面决定的目录传给 `--game`。已有 `civ2.exe` 时只注入，不另开一局。管道已在则直接退出。直接运行启动器、又没写 `--game` 时，同样先看 `CIV2AGENT_GAME` 和旁边的 `game.json`，再向上找 `civ2.exe`。
 
 管道只接受本机连接，但没有身份校验：本机任何进程都能连上来操作游戏。
 

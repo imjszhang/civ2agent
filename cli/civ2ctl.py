@@ -35,7 +35,7 @@ if hasattr(sys.stderr, "reconfigure"):
 PIPE = r"\\.\pipe\civ2agent"
 PROTOCOL = 3
 AGENT_ROOT = Path(__file__).resolve().parents[1]
-GAME_ROOT = AGENT_ROOT.parent
+GAME_FILE = AGENT_ROOT / "game.json"
 
 EXIT_OK = 0
 EXIT_REFUSED = 1
@@ -66,6 +66,40 @@ def exit_code(response):
     if response.get("error") in ("not_connected", "timeout"):
         return EXIT_UNREACHABLE
     return EXIT_REFUSED
+
+
+class GamePathError(Exception):
+    """The Civ2 install could not be resolved. The message is the reason to show."""
+
+
+def game_root():
+    """Directory that contains civ2.exe. This project does not have to live inside it.
+
+    CIV2AGENT_GAME, else game.json {"game": "..."} in the project root, else the
+    parent directory when civ2.exe is actually there. A relative path is relative
+    to the project root. The directory must contain civ2.exe."""
+    raw = (os.environ.get("CIV2AGENT_GAME") or "").strip()
+    source = "CIV2AGENT_GAME"
+    if not raw and GAME_FILE.is_file():
+        try:
+            data = json.loads(GAME_FILE.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise GamePathError(f"game.json 读不了：{exc}")
+        if not isinstance(data, dict) or not isinstance(data.get("game"), str) or not data["game"].strip():
+            raise GamePathError('game.json 须是 {"game": "civ2.exe 所在目录"}')
+        raw = data["game"].strip()
+        source = "game.json"
+    if raw:
+        path = Path(raw).expanduser()
+        path = path.resolve() if path.is_absolute() else (AGENT_ROOT / path).resolve()
+        if not (path / "civ2.exe").is_file():
+            raise GamePathError(f"{source} 指向的目录里没有 civ2.exe：{path}")
+        return path
+    parent = AGENT_ROOT.parent.resolve()
+    if (parent / "civ2.exe").is_file():
+        return parent
+    raise GamePathError("没有设置游戏目录。复制 game.example.json 为 game.json 并写上 civ2.exe 所在目录，"
+                        "或设置环境变量 CIV2AGENT_GAME")
 
 
 def games_dir():

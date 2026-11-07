@@ -42,7 +42,6 @@ ctl = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ctl)
 
 AGENT_ROOT = ctl.AGENT_ROOT
-GAME_ROOT = ctl.GAME_ROOT
 LAUNCHER = AGENT_ROOT / "build" / "bin" / "civ2agent-launch.exe"
 PLAYBOOK = AGENT_ROOT / "runner" / "playbook.md"
 RULES = AGENT_ROOT / "runner" / "rule.md"
@@ -148,12 +147,21 @@ def call(payload, connect_s=10.0):
     return ctl.transact(payload, connect_s=connect_s)
 
 
+def game_root():
+    """The Civ2 install from CIV2AGENT_GAME, game.json, or a parent that has civ2.exe."""
+    try:
+        return ctl.game_root()
+    except ctl.GamePathError as exc:
+        raise SessionError("usage", str(exc)) from exc
+
+
 def launch():
     """Start civ2.exe through the launcher (it returns once the DLL is in) and
     wait for the main menu."""
     if not LAUNCHER.is_file():
         raise SessionError("game_fault", f"没有 {LAUNCHER}；先编译 civ2agent")
-    proc = subprocess.run([str(LAUNCHER)], cwd=str(GAME_ROOT), capture_output=True, timeout=180)
+    root = game_root()
+    proc = subprocess.run([str(LAUNCHER), "--game", str(root)], cwd=str(root), capture_output=True, timeout=180)
     if proc.returncode != 0:
         raise SessionError("game_fault", "启动器失败：" + proc.stdout.decode("mbcs", errors="replace")[:200])
     ready = ctl.wait_ready(False, 120)
@@ -390,7 +398,7 @@ def autosave_prefix(leader):
 # --- the user's files -------------------------------------------------------
 
 def root_saves():
-    return sorted(p for p in GAME_ROOT.glob("*.SAV") if p.is_file())
+    return sorted(p for p in game_root().glob("*.SAV") if p.is_file())
 
 
 def backup(path):
@@ -398,11 +406,12 @@ def backup(path):
     folder = path / "backup"
     folder.mkdir(exist_ok=True)
     files = {}
-    for src in [GAME_ROOT / name for name in DAT_FILES] + root_saves():
+    root = game_root()
+    for src in [root / name for name in DAT_FILES] + root_saves():
         if src.is_file():
             shutil.copy2(src, folder / src.name)
             files[src.name] = {"sha256": sha256(src), "bytes": src.stat().st_size}
-    write_json(folder / "manifest.json", {"time": now(), "root": str(GAME_ROOT), "files": files})
+    write_json(folder / "manifest.json", {"time": now(), "root": str(root), "files": files})
     return sorted(files)
 
 
@@ -417,7 +426,7 @@ def reconcile(path, session, restore_dat):
         return {"note": "没有备份清单，什么也没动"}
     restored, moved, left = [], [], []
     for name, info in files.items():
-        live = GAME_ROOT / name
+        live = game_root() / name
         if (name in DAT_FILES and not restore_dat) or (live.is_file() and sha256(live) == info["sha256"]):
             continue
         if live.is_file() and name not in DAT_FILES:

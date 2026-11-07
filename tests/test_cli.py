@@ -241,5 +241,53 @@ class Sessions(unittest.TestCase):
                                    "dialog": None})
 
 
+class GameRoot(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.old_file = civ2ctl.GAME_FILE
+        self.old_env = os.environ.get("CIV2AGENT_GAME")
+        os.environ.pop("CIV2AGENT_GAME", None)
+        civ2ctl.GAME_FILE = Path(self.tmp.name) / "absent.json"
+
+    def tearDown(self):
+        civ2ctl.GAME_FILE = self.old_file
+        if self.old_env is None:
+            os.environ.pop("CIV2AGENT_GAME", None)
+        else:
+            os.environ["CIV2AGENT_GAME"] = self.old_env
+        self.tmp.cleanup()
+
+    def install(self, name):
+        path = Path(self.tmp.name) / name
+        path.mkdir()
+        (path / "civ2.exe").write_bytes(b"")
+        return path.resolve()
+
+    def test_the_environment_wins_over_the_file_and_both_need_civ2(self):
+        chosen = self.install("chosen")
+        other = self.install("other")
+        os.environ["CIV2AGENT_GAME"] = str(chosen)
+        self.assertEqual(civ2ctl.game_root(), chosen)
+        cfg = Path(self.tmp.name) / "game.json"
+        cfg.write_text(json.dumps({"game": str(other)}), encoding="utf-8")
+        civ2ctl.GAME_FILE = cfg
+        self.assertEqual(civ2ctl.game_root(), chosen)
+        del os.environ["CIV2AGENT_GAME"]
+        self.assertEqual(civ2ctl.game_root(), other)
+        cfg.write_text(json.dumps({"game": "missing"}), encoding="utf-8")
+        with self.assertRaises(civ2ctl.GamePathError) as caught:
+            civ2ctl.game_root()
+        self.assertIn("civ2.exe", str(caught.exception))
+
+    def test_without_a_setting_the_parent_is_used_only_when_it_has_the_game(self):
+        parent = civ2ctl.AGENT_ROOT.parent
+        if (parent / "civ2.exe").is_file():
+            self.assertEqual(civ2ctl.game_root(), parent.resolve())
+        else:
+            with self.assertRaises(civ2ctl.GamePathError) as caught:
+                civ2ctl.game_root()
+            self.assertIn("game.json", str(caught.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -268,6 +268,64 @@ class Lifecycle(unittest.TestCase):
         self.assertNotIn("存档时的局面", text)
         self.assertNotIn("tiles", text)
 
+    def test_context_without_a_guide_leaves_strategy_alone(self):
+        code, out = run(["new", "--request", "不看攻略", "--id", "no guide"])
+        self.assertEqual(code, 0)
+        folder = Path(out["dir"])
+        strategy = folder / "agent" / "strategy.md"
+        strategy.write_text("上次的打法\n", encoding="utf-8")
+        (folder / "agent" / "guide.md").write_text("旧攻略\n", encoding="utf-8")
+        code, out = run(["context", str(folder), "--goal", "接着玩"])
+        self.assertEqual(code, 0)
+        self.assertFalse((folder / "agent" / "guide.md").exists())
+        self.assertEqual(strategy.read_text(encoding="utf-8"), "上次的打法\n")
+        rules = (folder / "agent" / "rule.md").read_text(encoding="utf-8")
+        self.assertIn("## 同陆好战", rules)
+        (folder / "agent" / "rule.md").write_text("改过\n", encoding="utf-8")
+        code, out = run(["context", str(folder), "--goal", "再来"])
+        self.assertEqual(code, 0)
+        self.assertIn("## 同陆好战", (folder / "agent" / "rule.md").read_text(encoding="utf-8"))
+        self.assertIsNone(json.loads((folder / "session.json").read_text(encoding="utf-8")).get("guide"))
+
+    def test_context_copies_the_whole_guide_and_does_not_write_strategy(self):
+        code, out = run(["new", "--request", "按金元帝国", "--id", "jin yuan", "--guide", "jin-yuan"])
+        self.assertEqual((code, out["status"]), (0, "setup"))
+        folder = Path(out["dir"])
+        saved = json.loads((folder / "session.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["guide"], "jin-yuan")
+        self.assertIn("攻略：金元帝国", (folder / "brief.md").read_text(encoding="utf-8"))
+        code, out = run(["context", str(folder), "--goal", "接着玩"])
+        self.assertEqual(code, 0)
+        guide = (folder / "agent" / "guide.md").read_text(encoding="utf-8")
+        self.assertIn("# 文明Ⅱ", guide)
+        self.assertIn("第六篇 无法无天", guide)
+        self.assertFalse((folder / "agent" / "strategy.md").exists())
+        self.assertIn("strategy.md", (folder / "agent" / "playbook.md").read_text(encoding="utf-8"))
+
+    def test_unknown_guide_is_refused_before_a_folder(self):
+        code, out = run(["new", "--request", "没有的攻略", "--guide", "no-such"])
+        self.assertEqual((code, out["error"]), (2, "usage"))
+        self.assertEqual(list(Path(self.tmp.name).iterdir()), [])
+        code, out = run(["new", "--request", "先建一局", "--id", "refuse guide"])
+        folder = Path(out["dir"])
+        code, out = run(["resume", str(folder), "--guide", "no-such"])
+        self.assertEqual((code, out["error"]), (2, "usage"))
+        self.assertIsNone(json.loads((folder / "session.json").read_text(encoding="utf-8")).get("guide"))
+
+    def test_checkpoint_archives_the_strategy_once_per_turn(self):
+        folder = Path(self.tmp.name) / "archive"
+        (folder / "agent").mkdir(parents=True)
+        text = "# 第 12 回合\n\n造战士。\n"
+        (folder / "agent" / "strategy.md").write_text(text, encoding="utf-8")
+        self.assertEqual(session.archive_strategy(folder), "T0012.md")
+        saved = folder / "agent" / "strategy" / "T0012.md"
+        self.assertEqual(saved.read_text(encoding="utf-8"), text)
+        (folder / "agent" / "strategy.md").write_text("# 第 12 回合\n\n改成造移民。\n", encoding="utf-8")
+        self.assertIsNone(session.archive_strategy(folder))
+        self.assertEqual(saved.read_text(encoding="utf-8"), text)
+        (folder / "agent" / "strategy.md").write_text("没有回合号\n", encoding="utf-8")
+        self.assertIsNone(session.archive_strategy(folder))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -112,7 +112,7 @@ python civ2agent\cli\civ2ctl.py tools
 - `options`：可选项。`index` 从 0 起，`text` 是显示的文字，列表行另有游戏内部的 `id`，灰色不可选的行带 `disabled: true`。顺序是列表行或选项行，然后是按钮。
 - `edits`：有输入框时才有，每个输入框当前的文字。
 
-`via` 为 `game` 的对话框，`respond` 在游戏线程里调用对话框处理这次点击的函数，效果和玩家点击一样，不动鼠标，游戏窗口也不用在前台。灰色的行返回 `illegal`。
+`via` 为 `game` 的对话框，`respond` 在游戏线程里调用对话框处理这次点击的函数，效果和玩家点击一样，不动鼠标，游戏窗口也不用在前台。灰色的行返回 `illegal`。奇观或皇宫静帧也报成这种对话框，选项是「继续」。只要继续的那一页，DLL 点画面正中。改建页（「我们应改进那一部份」）只认宫殿部件。DLL 读每个部件的升级记录，已经升满的不点，点一个还能升级的部件的矩形中心。一次 `respond` 只翻一页。后面如果是普通对话框，选「继续」会被拒绝。最高议会（军事、科技、贸易、外交、态度、取消）也报成这种对话框。`respond` 按按钮文字点；点「取消」关掉。
 
 `via` 为 `mouse` 的对话框，控件不接受投递的鼠标消息。DLL 返回屏幕坐标，由 `civ2ctl.py` 把游戏窗口切到前台，用真实鼠标点击，期间不要动鼠标。要点的位置被别的窗口挡住时返回 `window_covered`，不点击。
 
@@ -179,11 +179,11 @@ python civ2agent\cli\civ2ctl.py skip-intro
 `cli/civ2session.py` 管理 agent 自己玩的游戏：按用户的要求开一局，每局一个目录 `civ2agent/games/<id>/`（不进 git），以后可以从这个目录接着玩。输出和退出码与 `civ2ctl.py` 相同。游戏里的每一步都通过 `civ2ctl.py` 的玩家操作完成：开局设置在游戏的开局对话框里选，存档走游戏菜单，所以画面上都看得到。
 
 ```text
-python civ2agent\cli\civ2session.py new --spec spec.json [--title 名字] [--request 用户的原话]
-python civ2agent\cli\civ2session.py new --request 用户的原话      # 之后写 spec.json，再 setup
+python civ2agent\cli\civ2session.py new --spec spec.json [--title 名字] [--request 用户的原话] [--guide jin-yuan]
+python civ2agent\cli\civ2session.py new --request 用户的原话 [--guide jin-yuan]   # 之后写 spec.json，再 setup
 python civ2agent\cli\civ2session.py setup 目录
 python civ2agent\cli\civ2session.py checkpoint                    # 每回合一次
-python civ2agent\cli\civ2session.py resume 目录
+python civ2agent\cli\civ2session.py resume 目录 [--guide jin-yuan]
 python civ2agent\cli\civ2session.py close [--status paused|ended] [--keep-running]
 python civ2agent\cli\civ2session.py status [目录]
 python civ2agent\cli\civ2session.py list
@@ -192,6 +192,7 @@ python civ2agent\cli\civ2session.py list
 - `new --spec`：建目录，备份用户的文件，启动游戏，按 spec 回答开局对话框，进入第一回合。游戏开局时的消息（「在一开始」、初学者指导）按确定，内容记进 `session.json` 的 `setup`；第一个要做选择的对话框（如研究项）留给 agent，返回 `dialog`。spec 没写到、又要做选择的开局对话框返回 `modal_open`：用 `civ2ctl.py respond` 回答，再运行 `setup 目录` 接着开局。
 - `checkpoint`：回合开始、没有对话框也没有城市窗口时运行。经游戏菜单存成 `saves/T0042.SAV`（同一回合再运行什么也不存），在 `turns.jsonl` 记一行，第 1 回合和每第 10 回合在 `snapshots/` 存一份完整局面。只保留最近 10 回合和每第 10 回合的存档。
 - `resume 目录`：启动游戏（已在运行且就是这局时直接接上），读这局最新的存档，核对文明、领袖是这一局。
+- `--guide jin-yuan` 或 `--guide jin-yuan-rush`：可选。前者是金元帝国攻略，后者是金元帝国·神级快攻。`context` 把全文写入 `agent/guide.md`。agent 一段开始时通读。不选则没有 `guide.md`。无论有没有攻略，每一回合都覆盖 `strategy.md`：长期、中期、短期目标各自写明做到第几回合；现在的回合还没过那个回合，而且目标对得上，就原样沿用；过了、做到了或对不上，才改那一个并写上新的回合。这一回合的做法按这些目标重写。有攻略时，对不上还包括和攻略对不上。违反 `rule.md` 里生效的法则也算对不上：写完策略后核对，不通过就改写再核对，通过后才下令。`resume --guide` 在读档之前记下攻略，可以给已经开的局加上或换上。未知名字直接拒绝。
 - `close`：存盘点，离开并退出游戏，恢复用户的文件，解锁。`--status ended` 表示这局已经结束。
 - `status`、`list`：一局的 `session.json`、最近几回合和游戏状态；所有局的概要。
 
@@ -199,7 +200,7 @@ python civ2agent\cli\civ2session.py list
 
 - `session.json`：状态（`setup`、`starting`、`active`、`paused`、`ended`、`failed`）、用户的要求、spec、开局时每个对话框选了什么、文明和领袖、现在的回合、存档列表、agent 运行的段数。
 - `brief.md`：用户的要求和开局设置。`spec.json`：开局设置。
-- `agent/`：agent 的工作目录。`notes.md` 是 agent 的长期笔记；`playbook.md`、`brief.md`、`context.md` 由 runner 每段写入。
+- `agent/`：agent 的工作目录。`notes.md` 是 agent 的长期笔记；`strategy.md` 由 agent 每回合自己写，末尾有「法则核对」，`checkpoint` 按文件里的回合号把上一份抄进 `agent/strategy/T####.md`（同一回合已有归档则不覆盖）；`playbook.md`、`brief.md`、`context.md`、`rule.md`、`guide.md` 由 runner 每段写入（没选攻略时不放 `guide.md`）。`rule.md` 从 `runner/rule.md` 抄入，agent 不改。
 - `log.jsonl`：这局里每次 `civ2ctl.py`、`civ2session.py` 调用的请求和响应（`state` 只记概要）。`turns.jsonl`：每回合一行。`runs.jsonl`、`runs/`：每段 agent 运行的结果和记录。
 - `saves/`：只放 .SAV，包括游戏自己的自动存档。游戏读档时会把存档所在目录当作覆盖目录（那里有 GAME.TXT 就用它），所以这里不能放别的。
 - `backup/`：开局前用户的文件和 `manifest.json`（SHA-256）。
@@ -212,7 +213,7 @@ python civ2agent\cli\civ2session.py list
 ```
 
 - `start`：`new`（开始新游戏，默认）或 `custom`（自定世界，可加 `world`）。
-- `map_size`：`small`、`medium`、`large`，或 `{"width": 60, "height": 80}`（自定尺寸）。
+- `map_size`：`small`、`medium`、`large`，或 `{"width": 60, "height": 80}`（自定尺寸）。用户没指定世界大小时写 `large`（对话框里的「大」，75×120）。
 - `difficulty`：`chieftain`、`warlord`、`prince`、`king`、`emperor`、`deity`。
 - `civs`：3 到 7（竞争程度，对话框里的「七个文明」等），或 `random`。
 - `barbarians`：`villages`、`roaming`、`restless`、`raging` 或 `random`。`rules`：`standard`（`custom` 的选项框要用鼠标点）。`gender`：`male`、`female`。
@@ -271,11 +272,14 @@ node civ2-play.mjs targets
 node civ2-play.mjs probe --target claude
 node civ2-play.mjs new --spec spec.json --turns 20 --target claude
 node civ2-play.mjs new --request "用罗马人，国王难度，小地图" --turns 20
+node civ2-play.mjs new --request "用罗马人，国王难度，小地图" --guide jin-yuan --turns 20
 node civ2-play.mjs resume ..\games\<id> --turns 30 --target codex
+node civ2-play.mjs resume ..\games\<id> --guide jin-yuan --turns 30
 ```
 
 - `targets.json`（不进 git）：名字到 js-agent-runtime 的 target（`harness`、`backend`），`default` 是不给 `--target` 时用的。每段都可以换一个 agent。
-- 每一段：`civ2session.py context` 写好 agent 目录（`playbook.md`、`brief.md`、`context.md`、`notes.md`），agent 在 `agent/` 里运行，目标是往后玩 `--segment-turns` 个回合（默认 5）；之后在 `runs.jsonl` 记一行（状态、回合、用量、agent 的总结），运行记录在 `runs/`。玩够 `--turns`（默认 10）、某段失败或 agent 没有往前玩就停下，然后 `close`。Ctrl+C 也会停下并 `close`；`--keep-open` 不收尾。
+- 每一段：`civ2session.py context` 写好 agent 目录（`playbook.md`、`brief.md`、`context.md`、`notes.md`、`rule.md`，选了攻略时还有全文 `guide.md`），agent 在 `agent/` 里运行，目标是往后玩 `--segment-turns` 个回合（默认 5）。有 `guide.md` 时这一段开始通读一次。每一回合都按画面覆盖 `strategy.md`，再按 `rule.md` 核对，通过后才操作。之后在 `runs.jsonl` 记一行（状态、回合、用量、agent 的总结），运行记录在 `runs/`。玩够 `--turns`（默认 10）、某段失败或 agent 没有往前玩就停下，然后 `close`。Ctrl+C 也会停下并 `close`；`--keep-open` 不收尾。
+- `--guide jin-yuan`：传给 `new` 或 `resume`。不选则和以前一样，没有攻略。
 - `new --request`：第一段的 agent 按用户的原话写 `spec.json` 并 `setup`，然后接着玩。
 - agent 要运行 Python 和 `civ2ctl.py`（命名管道），少数对话框要用真实鼠标。js-agent-runtime 0.2.1 起 `run()` 在 Windows 上可用：超时和中断用 `taskkill /T /F` 结束进程树，比 POSIX 的进程组弱，根进程退出后它拉起的后台进程可能还在。`harness.executable` 必须是原生 `.exe`，不能是 npm 的 `.cmd`。0.2.2 起 Cursor Agent 也能在 Windows 上跑：`executable` 填版本目录里的 `node.exe`（不要填 `agent.cmd`），`cursor-login` 要加 `useCurrentUserHomeForLogin: true`。Windows 上 Claude Code 没有沙箱，用 `permission: bypass`。Codex、DeepSeek Harness、OpenCode 的沙箱在 Windows 上还没验证过。
 - `--python` 或 `CIV2AGENT_PYTHON` 指定运行命令行的 Python。

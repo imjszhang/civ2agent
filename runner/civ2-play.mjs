@@ -13,8 +13,8 @@ import { CLI, RUNNER_DIR, buildPrompt, describeEvent, lastJson, loadTargets, pic
 const HELP = `用法：
   node civ2-play.mjs targets
   node civ2-play.mjs probe [--target NAME]
-  node civ2-play.mjs new (--spec FILE | --request 文字) [--title T] [选项]
-  node civ2-play.mjs resume DIR [选项]
+  node civ2-play.mjs new (--spec FILE | --request 文字) [--title T] [--guide jin-yuan] [选项]
+  node civ2-play.mjs resume DIR [--guide jin-yuan] [选项]
 
 选项：
   --target NAME        用哪个 agent（targets.json 里的名字，默认是它的 default）
@@ -23,6 +23,7 @@ const HELP = `用法：
   --segment-turns K    每段 agent 运行玩多少回合，默认 5
   --segment-minutes M  每段最长多少分钟，默认 60
   --keep-open          玩完不收尾（不退出游戏，锁也留着）
+  --guide NAME         可选攻略：jin-yuan、jin-yuan-rush。agent 通读全文。无论有没有攻略，每回合都自己写 strategy.md，再按 rule.md 核对
   --python PATH        运行 civ2 命令行的 Python，默认 CIV2AGENT_PYTHON 或 python`;
 
 const python = () => options.python ?? process.env.CIV2AGENT_PYTHON ?? "python";
@@ -116,8 +117,8 @@ async function main(argv) {
     args: argv, allowPositionals: true, options: {
       target: { type: "string" }, targets: { type: "string" }, turns: { type: "string" },
       "segment-turns": { type: "string" }, "segment-minutes": { type: "string" }, "keep-open": { type: "boolean" },
-      spec: { type: "string" }, request: { type: "string" }, title: { type: "string" }, python: { type: "string" },
-      help: { type: "boolean" },
+      spec: { type: "string" }, request: { type: "string" }, title: { type: "string" }, guide: { type: "string" },
+      python: { type: "string" }, help: { type: "boolean" },
     },
   });
   const int = v => (v === undefined ? undefined : Number.parseInt(v, 10));
@@ -141,6 +142,7 @@ async function main(argv) {
     if (values.spec) args.push("--spec", values.spec);
     if (values.request) args.push("--request", values.request);
     if (values.title) args.push("--title", values.title);
+    if (values.guide) args.push("--guide", values.guide);
     const created = session(...args);
     // A start dialog the spec did not cover: the agent answers it in the first segment.
     if (!created.ok && !(created.dir && created.status === "failed")) return created;
@@ -150,7 +152,9 @@ async function main(argv) {
   if (command === "resume") {
     if (!dirArg || !existsSync(dirArg)) throw new Error("resume 需要游戏局目录");
     const dir = path.resolve(dirArg);
-    const resumed = session("resume", dir);
+    const resumeArgs = ["resume", dir];
+    if (values.guide) resumeArgs.push("--guide", values.guide);
+    const resumed = session(...resumeArgs);
     if (!resumed.ok) return resumed;
     return playSession(dir, controller.signal);
   }

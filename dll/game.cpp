@@ -383,11 +383,17 @@ std::string DialogHeadJson(void* dlg) {
 
 // Every dialog report carries the same numbered options that act respond
 // picks from, so an index read from modal_open or an event is valid there.
+std::string MovieJson();
+std::string CouncilJson();
 std::string DialogJson() {
   void* dlg = DialogPtr();
   if (dlg) return "{" + DialogHeadJson(dlg) + "," + DialogOptionsJson(dlg) + DialogEditsJson(dlg) + "}";
   std::string screen = ModalScreenJson();
-  return screen.empty() ? "null" : screen;
+  if (!screen.empty()) return screen;
+  std::string film = MovieJson();
+  if (!film.empty()) return film;
+  std::string council = CouncilJson();
+  return council.empty() ? "null" : council;
 }
 
 // Advice the game shows without waiting for an answer.
@@ -1499,6 +1505,406 @@ HWND MapWindow() {
   return pick.hwnd;
 }
 
+// The still is drawn in the 640x480 view. Civ2UIA also creates a fullscreen
+// shell of the same class; the largest window is that shell, and a click in
+// its lower middle lands on the black border.
+struct PicturePick {
+  HWND hwnd = nullptr;
+  int distance = 0;
+};
+
+BOOL CALLBACK PickPicture(HWND hwnd, LPARAM lp) {
+  DWORD pid = 0;
+  GetWindowThreadProcessId(hwnd, &pid);
+  if (pid != GetCurrentProcessId() || !IsWindowVisible(hwnd)) return TRUE;
+  char cls[40] = {};
+  GetClassNameA(hwnd, cls, sizeof(cls));
+  if (strcmp(cls, "MSWindowClass") != 0) return TRUE;
+  RECT client{};
+  if (!GetClientRect(hwnd, &client)) return TRUE;
+  int width = client.right - client.left;
+  int height = client.bottom - client.top;
+  if (width < 320 || height < 240) return TRUE;
+  int dw = width - 640;
+  int dh = height - 480;
+  int distance = dw * dw + dh * dh;
+  auto* pick = reinterpret_cast<PicturePick*>(lp);
+  if (!pick->hwnd || distance < pick->distance) {
+    pick->hwnd = hwnd;
+    pick->distance = distance;
+  }
+  return TRUE;
+}
+
+HWND PictureWindow() {
+  PicturePick pick;
+  EnumWindows(PickPicture, reinterpret_cast<LPARAM>(&pick));
+  if (pick.hwnd) return pick.hwnd;
+  return MapWindow();
+}
+
+// The film window created for a wonder. Stale after the window is destroyed.
+// The startup handle stays hidden, so visibility is required. Its procedure
+// does not handle mouse buttons.
+HWND MovieWindow() {
+  auto** slot = At<HWND>(kVaMovieWindow);
+  if (!Readable(slot, sizeof(HWND))) return nullptr;
+  HWND hwnd = *slot;
+  if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd)) return nullptr;
+  wchar_t cls[32] = {};
+  if (GetClassNameW(hwnd, cls, 32) == 0 || wcscmp(cls, L"MSMMWindow") != 0) return nullptr;
+  return hwnd;
+}
+
+// Palace stills keep the view object at kVaThroneView for the whole wait.
+// The click handler is installed only when a graphic option is high enough,
+// so the pointer plus the wait flag is the signal on a normal game.
+bool ThroneWaiting() {
+  auto** slot = At<void*>(kVaThroneView);
+  if (!Readable(slot, sizeof(void*))) return false;
+  void* throne = *slot;
+  if (!Readable(throne, kThroneModal + kModalRunning + sizeof(int))) return false;
+  auto* modal = static_cast<char*>(throne) + kThroneModal;
+  if (*reinterpret_cast<int*>(modal + kModalRunning) == 0) return false;
+  int depth = ReadIntAt(kVaModalDepth);
+  if (depth < 0 || depth > 14) return false;
+  auto** stack = At<void*>(kVaModalStack);
+  if (!Readable(stack, 16 * sizeof(void*))) return false;
+  return stack[depth] == modal;
+}
+
+// A still that waits on a mouse click without showing MSMMWindow.
+bool ClickFilmWaiting() {
+  if (!g_base || !MatchLive()) return false;
+  if (DialogPtr() || CurrentModal() != ModalKind::None) return false;
+  if (GameTaxWindowOpen() || GameCityWindowOpen()) return false;
+  if (ThroneWaiting()) return true;
+  int depth = ReadIntAt(kVaModalDepth);
+  if (depth < 0 || depth > 14) return false;
+  auto** stack = At<void*>(kVaModalStack);
+  if (!Readable(stack, 16 * sizeof(void*))) return false;
+  void* modal = stack[depth];
+  if (!Readable(modal, kModalHandler + sizeof(void*))) return false;
+  auto* base = static_cast<char*>(modal);
+  if (*reinterpret_cast<int*>(base + kModalRunning) == 0) return false;
+  auto handler = *reinterpret_cast<std::uintptr_t*>(base + kModalHandler);
+  auto stub = reinterpret_cast<std::uintptr_t>(g_base) + (kVaClickContinue - kImageBase);
+  return handler == stub;
+}
+
+// Throne stills keep a scene number on the parent object (this+0x1924).
+// Other click-to-continue views leave it unreadable; -1 means no scene.
+int FilmScene(void* modal) {
+  if (!modal) return -1;
+  auto* scene = reinterpret_cast<char*>(modal) - kThroneModal + kThroneScene;
+  if (!Readable(scene, sizeof(int))) return -1;
+  int value = *reinterpret_cast<int*>(scene);
+  return (value >= 0 && value <= 3) ? value : -1;
+}
+
+int CurrentFilmScene() {
+  if (!ClickFilmWaiting()) return -1;
+  int depth = ReadIntAt(kVaModalDepth);
+  if (depth < 0 || depth > 14) return -1;
+  return FilmScene(At<void*>(kVaModalStack)[depth]);
+}
+
+std::string MovieJson() {
+  HWND hwnd = MovieWindow();
+  bool still = ClickFilmWaiting();
+  if (!hwnd && !still) return {};
+  std::string text = "按鼠标键继续";
+  int scene = CurrentFilmScene();
+  if (scene >= 0) text += "\n" + std::to_string(scene);
+  if (hwnd) {
+    char caption[512] = {};
+    GetWindowTextA(hwnd, caption, sizeof(caption));
+    std::string title = ReadGameText(caption, 400);
+    if (!title.empty()) text = title + "\n" + text;
+  }
+  return "{\"title\":" + JsonString("奇观") + ",\"text\":" + JsonString(text) +
+         ",\"kind\":\"controls\",\"via\":\"game\",\"options\":[{\"index\":0,\"text\":" + JsonString("继续") + "}]}";
+}
+
+// The advisors page (title painted as 「某某最高议会」) is a modal view, not a
+// popup. Its wait flag is set and its click handler is empty, so it matches
+// neither a dialog nor a wonder still. The window object hangs off the modal
+// at +8; the HWND is at +4 of that object. Child controls are the buttons.
+constexpr int kModalWindowObj = 8;
+constexpr int kWindowHwnd = 4;
+
+struct CouncilButton {
+  HWND hwnd = nullptr;
+  int left = 0;
+  int top = 0;
+  int right = 0;
+  int bottom = 0;
+  std::string text;
+};
+
+void* CouncilModal() {
+  if (!g_base || !MatchLive()) return nullptr;
+  if (DialogPtr() || CurrentModal() != ModalKind::None) return nullptr;
+  if (GameTaxWindowOpen() || GameCityWindowOpen() || GameMovieOpen()) return nullptr;
+  int depth = ReadIntAt(kVaModalDepth);
+  if (depth < 0 || depth > 14) return nullptr;
+  auto** stack = At<void*>(kVaModalStack);
+  if (!Readable(stack, 16 * sizeof(void*))) return nullptr;
+  void* modal = stack[depth];
+  if (!Readable(modal, kModalHandler + sizeof(void*))) return nullptr;
+  auto* base = static_cast<char*>(modal);
+  if (*reinterpret_cast<int*>(base + kModalRunning) == 0) return nullptr;
+  if (!Readable(base + kModalWindowObj, sizeof(void*))) return nullptr;
+  void* win = *reinterpret_cast<void**>(base + kModalWindowObj);
+  if (!Readable(static_cast<char*>(win) + kWindowHwnd, sizeof(HWND))) return nullptr;
+  HWND hwnd = *reinterpret_cast<HWND*>(static_cast<char*>(win) + kWindowHwnd);
+  if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd)) return nullptr;
+  char cls[40] = {};
+  if (GetClassNameA(hwnd, cls, sizeof(cls)) == 0 || strcmp(cls, "MSWindowClass") != 0) return nullptr;
+  return modal;
+}
+
+HWND CouncilHwnd(void* modal) {
+  if (!modal) return nullptr;
+  void* win = *reinterpret_cast<void**>(static_cast<char*>(modal) + kModalWindowObj);
+  return *reinterpret_cast<HWND*>(static_cast<char*>(win) + kWindowHwnd);
+}
+
+struct CouncilPick {
+  CouncilButton* out = nullptr;
+  int count = 0;
+  int cap = 0;
+};
+
+BOOL CALLBACK CollectCouncilChild(HWND hwnd, LPARAM lp) {
+  auto* pick = reinterpret_cast<CouncilPick*>(lp);
+  if (!IsWindowVisible(hwnd) || pick->count >= pick->cap) return TRUE;
+  char cls[40] = {};
+  GetClassNameA(hwnd, cls, sizeof(cls));
+  if (strcmp(cls, "MSControlClass") != 0) return TRUE;
+  RECT rect{};
+  if (!GetWindowRect(hwnd, &rect)) return TRUE;
+  int width = rect.right - rect.left;
+  int height = rect.bottom - rect.top;
+  if (width < 8 || height < 8) return TRUE;
+  CouncilButton& button = pick->out[pick->count++];
+  button.hwnd = hwnd;
+  button.left = rect.left;
+  button.top = rect.top;
+  button.right = rect.right;
+  button.bottom = rect.bottom;
+  char name[80] = {};
+  GetWindowTextA(hwnd, name, sizeof(name));
+  button.text = ReadGameText(name, 60);
+  return TRUE;
+}
+
+int CouncilButtons(CouncilButton* out, int cap) {
+  void* modal = CouncilModal();
+  if (!modal || cap < 1) return 0;
+  CouncilPick pick{out, 0, cap};
+  EnumChildWindows(CouncilHwnd(modal), CollectCouncilChild, reinterpret_cast<LPARAM>(&pick));
+  std::sort(out, out + pick.count, [](const CouncilButton& a, const CouncilButton& b) {
+    if (a.top / 8 != b.top / 8) return a.top < b.top;
+    return a.left < b.left;
+  });
+  // This page is five advisor buttons on one row and a wide 取消 under them.
+  // The captions are painted, not stored on the window.
+  static const char* kNames[] = {"军事", "科技", "贸易", "外交", "态度", "取消"};
+  bool named = pick.count == 6;
+  if (named) {
+    int narrow = out[0].right - out[0].left;
+    int wide = out[5].right - out[5].left;
+    if (narrow < 8 || wide < narrow * 3) named = false;
+  }
+  for (int i = 0; i < pick.count; ++i) {
+    if (!out[i].text.empty()) continue;
+    out[i].text = named ? kNames[i] : "按钮" + std::to_string(i + 1);
+  }
+  return pick.count;
+}
+
+std::string CouncilJson() {
+  CouncilButton buttons[12];
+  int count = CouncilButtons(buttons, 12);
+  if (!count) return {};
+  std::string options = ",\"kind\":\"controls\",\"via\":\"game\",\"options\":[";
+  for (int i = 0; i < count; ++i) {
+    if (i) options += ',';
+    options += "{\"index\":" + std::to_string(i) + ",\"text\":" + JsonString(buttons[i].text) + "}";
+  }
+  options += "]}";
+  return "{\"title\":" + JsonString("最高议会") + ",\"text\":\"\"" + options;
+}
+
+// The palace "which part" page samples the real cursor and the left button.
+// A posted WM_LBUTTONDOWN does not move the cursor or hold the button down.
+bool g_movie_button_down = false;
+
+void ReleaseMovieButton() {
+  if (!g_movie_button_down) return;
+  g_movie_button_down = false;
+  INPUT up{};
+  up.type = INPUT_MOUSE;
+  up.mi.dwFlags = MOUSEEVENTF_LEFTUP;
+  SendInput(1, &up, sizeof(up));
+}
+
+// True when FUN_0044f4c9 would still accept this part. A finished part beeps
+// and stays on the page, so it must not be clicked again.
+bool PalacePartOpen(const char* throne, int partId) {
+  if (!Readable(throne + kThroneCiv, sizeof(int)) || !Readable(throne + kThronePartSet, sizeof(int))) return false;
+  int civ = *reinterpret_cast<const int*>(throne + kThroneCiv);
+  if (civ < 0 || civ > 7) return false;
+  int set = *reinterpret_cast<const int*>(throne + kThronePartSet);
+  if (set == 0) {
+    if (partId < 0 || partId > 9) return false;
+    auto* levels = At<unsigned char>(kVaPalaceLevel);
+    if (!Readable(levels + civ * kPalaceCivStride + partId, 1)) return false;
+    return levels[civ * kPalaceCivStride + partId] < 4;
+  }
+  if (partId < 10) return false;
+  int bit = partId - 10;
+  if (bit > 7) return false;
+  auto* flags = At<unsigned char>(kVaPalaceBits);
+  if (!Readable(flags + civ * kPalaceCivStride, 1)) return false;
+  unsigned char have = flags[civ * kPalaceCivStride];
+  if ((bit == 4 || bit == 5) && (have & 0x10) && (have & 0x20)) return false;
+  if (bit == 4 && (have & 0x10)) bit = 5;
+  else if (bit == 5 && (have & 0x20)) bit = 4;
+  return (have & (1u << bit)) == 0;
+}
+
+// Centers of the parts this palace page can still improve, in view coordinates.
+int OpenPalaceParts(int* xs, int* ys, int cap) {
+  auto** slot = At<void*>(kVaThroneView);
+  if (!Readable(slot, sizeof(void*)) || !*slot) return 0;
+  auto* throne = static_cast<char*>(*slot);
+  if (!Readable(throne + kThronePartCount, sizeof(int))) return 0;
+  int count = *reinterpret_cast<int*>(throne + kThronePartCount);
+  if (count < 0 || count > 40) return 0;
+  int kept = 0;
+  for (int i = 0; i < count && kept < cap; ++i) {
+    auto* part = throne + kThroneParts + i * kThronePartBytes;
+    if (!Readable(part, kThronePartId + sizeof(int))) break;
+    int left = *reinterpret_cast<int*>(part);
+    int top = *reinterpret_cast<int*>(part + 4);
+    int right = *reinterpret_cast<int*>(part + 8);
+    int bottom = *reinterpret_cast<int*>(part + 12);
+    int id = *reinterpret_cast<int*>(part + kThronePartId);
+    if (right <= left || bottom <= top || left < 0 || top < 0 || right > 2000 || bottom > 2000) continue;
+    if (!PalacePartOpen(throne, id)) continue;
+    xs[kept] = (left + right) / 2;
+    ys[kept] = (top + bottom) / 2;
+    ++kept;
+  }
+  return kept;
+}
+
+// FUN_005c61b0 waits while *(view+0x8c) != 0. Scene 0 accepts any click.
+// A later palace scene hit-tests the point against the part rectangles, so
+// the middle of the window (the empty floor) does not count.
+std::string ClickFilmImpl() {
+  HWND movie = MovieWindow();
+  bool still = ClickFilmWaiting();
+  if (!movie && !still) return ErrJson("no_dialog", "没有打开的界面");
+  int depth = still ? ReadIntAt(kVaModalDepth) : -1;
+  void* modal = nullptr;
+  int scene = -1;
+  if (still && depth >= 0 && depth <= 14) {
+    modal = At<void*>(kVaModalStack)[depth];
+    scene = FilmScene(modal);
+  }
+  HWND target = PictureWindow();
+  if (!target) target = movie ? movie : MainWindow();
+  if (!target) return ErrJson("game_fault", "找不到影片窗口");
+  RECT client{};
+  if (!GetClientRect(target, &client)) return ErrJson("game_fault", "找不到影片窗口");
+  int width = client.right - client.left;
+  int height = client.bottom - client.top;
+  if (width < 8 || height < 8) return ErrJson("game_fault", "找不到影片窗口");
+  int aims[40][2];
+  int aim_count = 0;
+  if (scene > 0) {
+    int xs[40], ys[40];
+    int open = OpenPalaceParts(xs, ys, 40);
+    for (int i = 0; i < open; ++i) {
+      aims[aim_count][0] = xs[i];
+      aims[aim_count][1] = ys[i];
+      ++aim_count;
+    }
+  }
+  if (!aim_count) {
+    aims[0][0] = width / 2;
+    aims[0][1] = height / 2;
+    aim_count = 1;
+  }
+  HWND root = GetAncestor(target, GA_ROOT);
+  if (!root) root = MainWindow();
+  if (root) {
+    ShowWindow(root, SW_RESTORE);
+    SetForegroundWindow(root);
+    Sleep(30);
+  }
+  bool changed = false;
+  int used_x = aims[0][0], used_y = aims[0][1];
+  for (int i = 0; i < aim_count && !changed; ++i) {
+    used_x = aims[i][0];
+    used_y = aims[i][1];
+    LPARAM lp = MAKELPARAM(static_cast<WORD>(used_x), static_cast<WORD>(used_y));
+    PostMessageA(target, WM_LBUTTONDOWN, MK_LBUTTON, lp);
+    PostMessageA(target, WM_LBUTTONUP, 0, lp);
+    POINT origin{used_x, used_y};
+    if (ClientToScreen(target, &origin)) {
+      SetCursorPos(origin.x, origin.y);
+      HWND at = WindowFromPoint(origin);
+      DWORD at_pid = 0;
+      if (at) GetWindowThreadProcessId(at, &at_pid);
+      if (at_pid == GetCurrentProcessId()) {
+        INPUT down{};
+        down.type = INPUT_MOUSE;
+        down.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+        if (SendInput(1, &down, sizeof(down)) == 1) {
+          g_movie_button_down = true;
+          Sleep(40);
+          ReleaseMovieButton();
+        }
+      }
+    }
+    DWORD start = GetTickCount();
+    DWORD wait = scene > 0 ? 400 : 2000;
+    while (GetTickCount() - start < wait) {
+      Sleep(15);
+      bool dialog = DialogPtr() != nullptr || CurrentModal() != ModalKind::None;
+      bool open = MovieWindow() != nullptr || ClickFilmWaiting();
+      bool stepped = false;
+      if (still && open) {
+        int now_depth = ReadIntAt(kVaModalDepth);
+        void* now = (now_depth >= 0 && now_depth <= 14) ? At<void*>(kVaModalStack)[now_depth] : nullptr;
+        int now_scene = now ? FilmScene(now) : -1;
+        bool scene_step = scene >= 0 && now_scene >= 0 && now_scene != scene;
+        bool cleared = modal && Readable(modal, kModalRunning + sizeof(int)) &&
+                       *reinterpret_cast<int*>(static_cast<char*>(modal) + kModalRunning) == 0;
+        stepped = now_depth != depth || now != modal || scene_step || cleared;
+      }
+      if (movie && MovieWindow() == nullptr) stepped = true;
+      if (!dialog && !stepped && open) continue;
+      changed = true;
+      DWORD settle = GetTickCount();
+      while (GetTickCount() - settle < 500) {
+        if (DialogPtr() || CurrentModal() != ModalKind::None || MovieWindow() || ClickFilmWaiting()) break;
+        Sleep(20);
+      }
+      break;
+    }
+  }
+  ReleaseMovieButton();
+  GameLog("film click changed=%d at=%d,%d depth=%d scene=%d parts=%d", changed ? 1 : 0, used_x, used_y, depth,
+          scene, aim_count);
+  return OkJson(std::string("\"index\":0,\"text\":") + JsonString("继续") + ",\"via\":\"game\",\"changed\":" +
+                (changed ? "true" : "false") + ",\"dialog\":" + DialogJson());
+}
+
 constexpr LPARAM kKickEnter = 1;
 constexpr LPARAM kKickEscape = 2;
 
@@ -2251,7 +2657,7 @@ std::string BeginProduce(const ActArgs& a) {
   if (Cities()[a.city].owner != Human()) return ErrJson("illegal", "这不是己方城市");
   int open = OpenCityWindow();
   int locked = LockedCityWindow();
-  if (CityWindowLocked() && locked < 0 && !GameModalScreenOpen()) {
+  if (CityWindowLocked() && locked < 0 && !GameModalScreenOpen() && !GameMovieOpen() && !GameCouncilOpen()) {
     return std::string("{\"ok\":false,\"error\":\"modal_open\",\"reason\":") +
            JsonString("有一扇还没登记的窗口挡着") + ",\"city_window\":null,\"dialog\":" + DialogJson() + "}";
   }
@@ -2441,9 +2847,81 @@ bool GameDialogOpen() { return DialogPtr() != nullptr; }
 
 bool GameModalScreenOpen() { return CurrentModal() != ModalKind::None; }
 
+bool GameMovieOpen() { return MovieWindow() != nullptr || ClickFilmWaiting(); }
+
+bool GameCouncilOpen() {
+  CouncilButton buttons[12];
+  return CouncilButtons(buttons, 12) > 0;
+}
+
+std::string GameClickCouncil(int option, const std::string& text) {
+  CouncilButton buttons[12];
+  int count = CouncilButtons(buttons, 12);
+  if (!count) return ErrJson("no_dialog", "最高议会已经关了");
+  int index = option;
+  if (!text.empty()) {
+    index = -1;
+    for (int i = 0; i < count; ++i) {
+      if (buttons[i].text == text) index = i;
+    }
+    if (index < 0) return ErrJson("illegal", "对话框上没有这个按钮");
+  }
+  if (index < 0 || index >= count) return ErrJson("illegal", "选项下标超出范围");
+  const CouncilButton& button = buttons[index];
+  HWND root = GetAncestor(button.hwnd, GA_ROOT);
+  if (root) {
+    ShowWindow(root, SW_RESTORE);
+    SetForegroundWindow(root);
+    Sleep(30);
+  }
+  RECT client{};
+  GetClientRect(button.hwnd, &client);
+  int x = (client.right - client.left) / 2;
+  int y = (client.bottom - client.top) / 2;
+  LPARAM lp = MAKELPARAM(static_cast<WORD>(x), static_cast<WORD>(y));
+  PostMessageA(button.hwnd, WM_LBUTTONDOWN, MK_LBUTTON, lp);
+  PostMessageA(button.hwnd, WM_LBUTTONUP, 0, lp);
+  POINT origin{(client.right - client.left) / 2, (client.bottom - client.top) / 2};
+  if (ClientToScreen(button.hwnd, &origin)) {
+    SetCursorPos(origin.x, origin.y);
+    HWND at = WindowFromPoint(origin);
+    DWORD at_pid = 0;
+    if (at) GetWindowThreadProcessId(at, &at_pid);
+    if (at_pid == GetCurrentProcessId()) {
+      INPUT down{};
+      down.type = INPUT_MOUSE;
+      down.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+      if (SendInput(1, &down, sizeof(down)) == 1) {
+        g_movie_button_down = true;
+        Sleep(40);
+        ReleaseMovieButton();
+      }
+    }
+  }
+  bool cancel = button.text == "取消";
+  bool changed = false;
+  DWORD start = GetTickCount();
+  DWORD wait = cancel ? 2000 : 400;
+  while (GetTickCount() - start < wait) {
+    Sleep(15);
+    if (!GameCouncilOpen()) {
+      changed = true;
+      break;
+    }
+  }
+  if (!cancel && !changed) changed = true;
+  GameLog("council click changed=%d index=%d", changed ? 1 : 0, index);
+  return OkJson(std::string("\"index\":") + std::to_string(index) + ",\"text\":" + JsonString(button.text) +
+                ",\"via\":\"game\",\"changed\":" + (changed ? "true" : "false") + ",\"dialog\":" + DialogJson());
+}
+
+std::string GameClickFilm() { return ClickFilmImpl(); }
+
+void GameReleaseMovieClick() { ReleaseMovieButton(); }
+
 bool GameUnregisteredLock() {
   return MatchLive() && CityWindowLocked() && LockedCityWindow() < 0 && CurrentModal() == ModalKind::None &&
-         DialogPtr() == nullptr;
+         DialogPtr() == nullptr && !GameMovieOpen() && !GameCouncilOpen();
 }
 
 void GameObserveDialog() {
@@ -2466,6 +2944,20 @@ void GameObserveDialog() {
       PushEvent("{\"type\":\"dialog_closed\"}");
     last_screen = screen;
   }
+  static bool last_movie = false;
+  bool movie = now == nullptr && screen == ModalKind::None && GameMovieOpen();
+  if (movie != last_movie) {
+    if (movie) PushEvent(std::string("{\"type\":\"dialog\",\"dialog\":") + DialogJson() + "}");
+    else if (!now) PushEvent("{\"type\":\"dialog_closed\"}");
+    last_movie = movie;
+  }
+  static bool last_council = false;
+  bool council = now == nullptr && screen == ModalKind::None && !movie && GameCouncilOpen();
+  if (council != last_council) {
+    if (council) PushEvent(std::string("{\"type\":\"dialog\",\"dialog\":") + DialogJson() + "}");
+    else if (!now && !movie) PushEvent("{\"type\":\"dialog_closed\"}");
+    last_council = council;
+  }
   void* notice = NoticePtr();
   if (notice && notice != g_last_notice) PushEvent(std::string("{\"type\":\"notice\",\"notice\":") + NoticeJson() + "}");
   g_last_notice = notice;
@@ -2474,10 +2966,12 @@ void GameObserveDialog() {
 bool GameTakeModalAbort(std::string& response_json) {
   bool dialog = DialogPtr() != nullptr;
   bool screen = !dialog && GameModalScreenOpen();
-  bool tax = !dialog && !screen && GameTaxWindowOpen();
-  bool city = !dialog && !screen && !tax && GameCityWindowModal();
-  bool unknown = !dialog && !screen && !tax && !city && GameUnregisteredLock();
-  if (!dialog && !screen && !tax && !city && !unknown) return false;
+  bool film = !dialog && !screen && GameMovieOpen();
+  bool council = !dialog && !screen && !film && GameCouncilOpen();
+  bool tax = !dialog && !screen && !film && !council && GameTaxWindowOpen();
+  bool city = !dialog && !screen && !film && !council && !tax && GameCityWindowModal();
+  bool unknown = !dialog && !screen && !film && !council && !tax && !city && GameUnregisteredLock();
+  if (!dialog && !screen && !film && !council && !tax && !city && !unknown) return false;
   std::string turn;
   if (MatchLive()) {
     turn = std::string("\"turn\":") + std::to_string(G()->turn) + ",\"year\":" + std::to_string(GameYear()) + ",";
@@ -2489,6 +2983,8 @@ bool GameTakeModalAbort(std::string& response_json) {
   }
   const char* reason = dialog ? "出现对话框"
                        : screen ? "画面上有一页窗口，用 respond 关闭"
+                       : film   ? "奇观动画在等鼠标，用 respond 继续"
+                       : council ? "最高议会开着，用 respond 点一个按钮或取消"
                        : tax    ? "税率窗口打开着，游戏等它关上；用 rates 设好比例并确定"
                        : city   ? "城市窗口打开着，游戏等它关上；用 produce 或 close-city"
                                 : "有一扇还没登记的窗口挡着";
@@ -2540,7 +3036,7 @@ Gate CachedGate() {
 
 std::string GameHelloJson() {
   Gate g = GameGate();
-  return HelloJson(g, g.hash_ok && (DialogPtr() != nullptr || GameModalScreenOpen()), g.in_game ? CityWindowJson() : std::string("null"),
+  return HelloJson(g, g.hash_ok && (DialogPtr() != nullptr || GameModalScreenOpen() || GameMovieOpen() || GameCouncilOpen()), g.in_game ? CityWindowJson() : std::string("null"),
                    g.in_game ? TaxWindowJson() : std::string("null"));
 }
 
@@ -2774,7 +3270,7 @@ std::string GameActJson(const ActArgs& a) {
     return ClickMenuOption(a.option, a.text, a.has_edit ? &a.edits : nullptr);
   }
   if (!RequireMatch(err)) return err;
-  if (DialogPtr() || GameModalScreenOpen() || GameUnregisteredLock()) {
+  if (DialogPtr() || GameModalScreenOpen() || GameMovieOpen() || GameCouncilOpen() || GameUnregisteredLock()) {
     std::string held;
     if (GameTakeModalAbort(held)) return held;
   }
@@ -2874,7 +3370,7 @@ std::string GameActJson(const ActArgs& a) {
 std::string GameBeginEndTurnJson() {
   std::string err;
   if (!RequireMatch(err)) return err;
-  if (DialogPtr() || GameModalScreenOpen() || GameUnregisteredLock()) {
+  if (DialogPtr() || GameModalScreenOpen() || GameMovieOpen() || GameCouncilOpen() || GameUnregisteredLock()) {
     std::string held;
     if (GameTakeModalAbort(held)) return held;
   }
@@ -2923,7 +3419,7 @@ bool GamePendingActive() { return g_pending.kind != PendingKind::None; }
 std::string GamePollPending(int depth) {
   if (g_pending.kind == PendingKind::None) return {};
   if (g_pending.kind == PendingKind::Revolt) {
-    if (DialogPtr() || GameModalScreenOpen() || GameUnregisteredLock()) {
+    if (DialogPtr() || GameModalScreenOpen() || GameMovieOpen() || GameCouncilOpen() || GameUnregisteredLock()) {
       g_pending = {};
       std::string held;
       if (GameTakeModalAbort(held)) return held;
@@ -2959,7 +3455,8 @@ std::string GamePollPending(int depth) {
     return {};
   }
   auto* game = G();
-  if (g_pending.kind == PendingKind::EndTurn && !DialogPtr() && !GameModalScreenOpen() && !GameUnregisteredLock()) {
+  if (g_pending.kind == PendingKind::EndTurn && !DialogPtr() && !GameModalScreenOpen() && !GameMovieOpen() &&
+      !GameCouncilOpen() && !GameUnregisteredLock()) {
     bool advanced = game->turn != g_pending.turn || game->year != g_pending.year;
     if (advanced && depth == 1) {
       g_pending = {};

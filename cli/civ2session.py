@@ -6,11 +6,11 @@ user's request and the settings chosen at the start, the agent's notes, every
 command it ran, a line per turn, state snapshots and the saves. Any game can be
 resumed from its folder.
 
-    civ2session.py new --spec spec.json [--title T] [--request TEXT]
-    civ2session.py new --request TEXT          # the agent writes spec.json, then: setup
+    civ2session.py new --spec spec.json [--title T] [--request TEXT] [--guide jin-yuan]
+    civ2session.py new --request TEXT [--guide jin-yuan]   # the agent writes spec.json, then: setup
     civ2session.py setup DIR
     civ2session.py checkpoint                  # once a turn, by the agent
-    civ2session.py resume DIR
+    civ2session.py resume DIR [--guide jin-yuan]
     civ2session.py close [--status paused|ended] [--keep-running]
     civ2session.py status [DIR]
     civ2session.py list
@@ -45,6 +45,12 @@ AGENT_ROOT = ctl.AGENT_ROOT
 GAME_ROOT = ctl.GAME_ROOT
 LAUNCHER = AGENT_ROOT / "build" / "bin" / "civ2agent-launch.exe"
 PLAYBOOK = AGENT_ROOT / "runner" / "playbook.md"
+RULES = AGENT_ROOT / "runner" / "rule.md"
+GUIDES = {
+    "jin-yuan": AGENT_ROOT / "runner" / "guides" / "jin-yuan.md",
+    "jin-yuan-rush": AGENT_ROOT / "runner" / "guides" / "jin-yuan-rush.md",
+}
+GUIDE_TITLES = {"jin-yuan": "金元帝国", "jin-yuan-rush": "金元帝国·神级快攻"}
 DAT_FILES = ("CIV2.DAT", "HALLFAME.DAT")
 KEEP_RECENT = 10  # turn saves kept besides every tenth turn
 SNAPSHOT_EVERY = 10
@@ -458,6 +464,28 @@ def prune(path, session):
     return removed
 
 
+def archive_strategy(path):
+    """Keep the strategy the agent wrote for one turn. checkpoint runs at the
+    start of the next turn, while strategy.md still holds the previous turn."""
+    src = path / "agent" / "strategy.md"
+    if not src.is_file():
+        return None
+    text = src.read_text(encoding="utf-8")
+    if not text.strip():
+        return None
+    found = re.search(r"第\s*(\d+)\s*回合", text)
+    if not found:
+        return None
+    name = f"T{int(found.group(1)):04d}.md"
+    folder = path / "agent" / "strategy"
+    folder.mkdir(exist_ok=True)
+    dest = folder / name
+    if dest.exists():
+        return None
+    dest.write_text(text, encoding="utf-8")
+    return name
+
+
 def checkpoint(path=None, session=None):
     """Save this turn into saves/ through the game's menu, one line in
     turns.jsonl, a snapshot every tenth turn. The first time, the save is also
@@ -476,7 +504,7 @@ def checkpoint(path=None, session=None):
     if not state.get("in_game"):
         raise SessionError("not_in_game", "读不到局面", state=state)
     turn = state["turn"]
-    result = {"ok": True, "turn": turn, "year": state.get("year")}
+    result = {"ok": True, "turn": turn, "year": state.get("year"), "strategy": archive_strategy(path)}
     if not session.get("redirected"):
         start = path / "saves" / "start.SAV"
         saved = ctl.save_game(start, overwrite=True)
@@ -701,8 +729,41 @@ def saved_screen_lines(turn):
     return lines
 
 
+def chosen_guide(name):
+    """A known guide id, or None. An unknown name is refused before a folder
+    is created or a save is loaded."""
+    if not name:
+        return None
+    path = GUIDES.get(name)
+    if path is None or not path.is_file():
+        known = "、".join(GUIDES) or "无"
+        raise SessionError("usage", f"没有攻略 {name}，可选：{known}")
+    return name
+
+
+def place_guide(agent, session):
+    """Copy the whole guide into the agent folder, or remove a leftover.
+    strategy.md belongs to the agent and is left untouched."""
+    target = agent / "guide.md"
+    name = session.get("guide")
+    if not name:
+        if target.exists():
+            target.unlink()
+        return
+    chosen_guide(name)
+    shutil.copy2(GUIDES[name], target)
+
+
+def place_rules(agent):
+    """Copy rule.md into the agent folder. The agent reads it and does not edit it."""
+    if RULES.is_file():
+        shutil.copy2(RULES, agent / "rule.md")
+
+
 def write_brief(path, session):
     lines = [f"# {session['title']}", "", f"游戏局 {session['id']}，{session['created']} 建立。", ""]
+    if session.get("guide"):
+        lines += [f"攻略：{GUIDE_TITLES.get(session['guide'], session['guide'])}", ""]
     if session.get("request"):
         lines += ["## 用户的要求", "", session["request"], ""]
     if session.get("spec"):
@@ -733,6 +794,7 @@ def identity():
 def cmd_new(args):
     if args.spec is None and not args.request:
         raise SessionError("usage", "new 需要 --spec 或 --request")
+    guide = chosen_guide(args.guide)
     spec = read_spec(args.spec) if args.spec is not None else None
     if spec is not None:
         check_spec(spec)
@@ -748,7 +810,7 @@ def cmd_new(args):
     session = {"id": sid, "title": title, "created": now(), "updated": now(), "status": "setup",
                "request": args.request, "spec": spec, "setup": [], "identity": None, "prefix": None,
                "redirected": False, "saves": [], "turn": None, "year": None, "latest_save": None,
-               "segments": 0, "exe_hash": None}
+               "segments": 0, "exe_hash": None, "guide": guide}
     save(path, session)
     write_brief(path, session)
     if spec is None:
@@ -838,6 +900,8 @@ def load_latest(path):
 
 
 def cmd_resume(args):
+    if args.guide:
+        chosen_guide(args.guide)
     path = session_dir(args.dir)
     session = load(path)
     if session["status"] in ("setup", "starting", "failed"):
@@ -847,6 +911,10 @@ def cmd_resume(args):
     active = ctl.active_session()
     if active and Path(active["dir"]).resolve() != path:
         raise SessionError("illegal", f"游戏局 {active.get('id')} 还在进行，先 close")
+    if args.guide:
+        session.update(guide=args.guide, updated=now())
+        save(path, session)
+        write_brief(path, session)
     status = call({"op": "hello"}, connect_s=2)
     attached = bool(status.get("ok") and status.get("in_game"))
     if attached and not same_game(session):
@@ -952,6 +1020,8 @@ def cmd_context(args):
     agent.mkdir(exist_ok=True)
     if PLAYBOOK.is_file():
         shutil.copy2(PLAYBOOK, agent / "playbook.md")
+    place_guide(agent, session)
+    place_rules(agent)
     shutil.copy2(path / "brief.md", agent / "brief.md")
     if not (agent / "notes.md").exists():
         (agent / "notes.md").write_text(NOTES_SEED, encoding="utf-8")
@@ -1019,6 +1089,7 @@ def build_parser():
     p.add_argument("--request", help="用户的原话，记进 brief.md")
     p.add_argument("--title", help="这局的名字")
     p.add_argument("--id", help="目录名里的英文标识，如 romans-king")
+    p.add_argument("--guide", help="可选攻略，如 jin-yuan；全文写入 guide.md，strategy.md 由 agent 自己写")
     p.set_defaults(run=cmd_new)
     p = sub.add_parser("setup", help="按目录里的 spec.json 启动游戏并开局")
     p.add_argument("dir")
@@ -1027,6 +1098,7 @@ def build_parser():
     p.set_defaults(run=cmd_checkpoint)
     p = sub.add_parser("resume", help="从目录接着玩：启动游戏，读最新的存档，核对是这一局")
     p.add_argument("dir")
+    p.add_argument("--guide", help="给这局加上或换上攻略，如 jin-yuan")
     p.set_defaults(run=cmd_resume)
     p = sub.add_parser("close", help="收尾：存盘点，离开并退出游戏，恢复用户的文件，解锁")
     p.add_argument("--status", choices=("paused", "ended"), default="paused")

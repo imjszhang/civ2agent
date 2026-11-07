@@ -50,6 +50,18 @@ bool GameTaxWindowOpen();
 bool GameWindowModal();
 // A civilopedia page or the foreign-ministry viewer is up.
 bool GameModalScreenOpen();
+// A wonder or throne movie is waiting for a mouse click.
+bool GameMovieOpen();
+// The advisors page (最高议会): a modal window with its own buttons, not a popup.
+bool GameCouncilOpen();
+// Click one button of that page, from the pipe thread. The game thread is
+// inside the page's wait and cannot click for itself.
+std::string GameClickCouncil(int option, const std::string& text);
+// One left click on the visible picture, from the pipe thread. The game
+// thread is inside the wait and cannot click for itself.
+std::string GameClickFilm();
+// Release the left button pressed to step a movie, after the window proc ran.
+void GameReleaseMovieClick();
 // The city-window lock is set, but no city window and no known page is open.
 bool GameUnregisteredLock();
 

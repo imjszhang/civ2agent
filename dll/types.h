@@ -376,6 +376,42 @@ constexpr int kMenuKingdom = 2;
 constexpr int kMenuTaxRate = 0x201;
 // Kingdom > 革命(R), shortcut Shift+R. Id read from the live menu on this exe.
 constexpr int kMenuRevolt = 222;
+
+// Wonder movies that really show a window. 0x5DD8A0 creates an MSMMWindow at
+// startup (style 0, so it stays hidden) and stores it here. Only a visible
+// window is a film. Its window procedure (0x5DD93F) handles MM_MCINOTIFY and
+// ignores mouse buttons.
+constexpr std::uint32_t kVaMovieWindow = 0x006E4FF8;
+// Click-to-continue stills. FUN_005c61b0 pushes the view and loops while
+// *(view+0x8c) != 0, dispatching one queued message per pass. The handler
+// stored at view+0xa4 is the jmp stub 0x403585 (to 0x59C301), and only when
+// the graphics byte at 0x655B02 is above 2. A dialog, the tax window or the
+// city window can sit on this stack too; those keep their own detectors.
+constexpr std::uint32_t kVaModalDepth = 0x00637EA8;  // int, -1 idle, else 0..14
+constexpr std::uint32_t kVaModalStack = 0x00637EB0;  // void*[16], index == depth
+constexpr int kModalRunning = 0x8C;
+constexpr int kModalHandler = 0xA4;
+constexpr std::uint32_t kVaClickContinue = 0x00403585;
+// The throne view object while a palace still is on screen. FUN_0044ce16
+// stores it; the wait object is this + 0x54C. The scene number is at +0x1924.
+constexpr std::uint32_t kVaThroneView = 0x00626810;
+constexpr int kThroneModal = 0x54C;
+constexpr int kThroneScene = 0x1924;
+// Palace parts for the "which part" page. FUN_0044f4c9 hit-tests the click
+// against rectangles at throne+0x660 (0x18 bytes each: left, top, right,
+// bottom). The count is at throne+0x1920. Scene 0 accepts any click; a later
+// scene only accepts a point inside one of these rectangles.
+constexpr int kThroneParts = 0x660;
+constexpr int kThronePartBytes = 0x18;
+constexpr int kThronePartCount = 0x1920;
+constexpr int kThronePartId = 0x10;     // which part this rectangle is
+constexpr int kThroneCiv = 0x500;       // index into the per-civ upgrade bytes
+constexpr int kThronePartSet = 0x1928;  // 0: parts 0..9, otherwise parts 10+
+// FUN_0044f4c9 refuses a part the palace already has. Parts 0..9 are a level
+// byte (full at 4). Parts 10+ are bits in one byte. Stride is 0x594 per civ.
+constexpr std::uint32_t kVaPalaceLevel = 0x0064CA93;
+constexpr std::uint32_t kVaPalaceBits = 0x0064CA9B;
+constexpr int kPalaceCivStride = 0x594;
 // @PRODUCTION record ids: unit type, 0x3E + improvement, 0x65 + wonder (= 0x3E + 39 + wonder).
 constexpr int kProductionImprovementBase = 0x3E;
 

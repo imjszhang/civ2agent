@@ -58,7 +58,7 @@ test("every example target plans a segment in a game folder", () => {
 
 test("the prompt points at the tools and the files to read", () => {
   const prompt = buildPrompt({ sessionDir: "D:\\games\\g1", python: "C:\\Program Files\\Python\\python.exe" });
-  for (const part of [CLI.ctl, CLI.session, CLI.protocol, "D:\\games\\g1", "playbook.md", "notes.md", "\"C:\\Program Files\\Python\\python.exe\""])
+  for (const part of [CLI.ctl, CLI.session, CLI.protocol, "D:\\games\\g1", "playbook.md", "notes.md", "guide.md", "rule.md", "strategy.md", "\"C:\\Program Files\\Python\\python.exe\""])
     assert.ok(prompt.includes(part), part);
   assert.match(segmentGoal({ status: "setup" }, 6), /spec\.json/u);
   assert.match(segmentGoal({ status: "active", turn: 12 }, 17), /第 12 回合.*第 17 回合/u);

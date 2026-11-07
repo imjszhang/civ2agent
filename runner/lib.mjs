@@ -64,8 +64,8 @@ export function buildPrompt({ sessionDir, python }) {
     `- 存盘点、开局：${py} "${CLI.session}" checkpoint、setup <目录>`,
     `- 全部命令的说明：${CLI.protocol}`,
     "",
-    "先读当前目录里的 playbook.md（规则和每回合的步骤），再读 context.md（这一段的目标）、brief.md（用户的要求）和 notes.md（你之前的笔记）。",
-    "然后按 context.md 的目标玩。结束前更新 notes.md，最后用一两句中文说明这一段做了什么。",
+    "先读当前目录里的 playbook.md（规则和每回合的步骤），再读 context.md（这一段的目标）、brief.md（用户的要求）和 notes.md（你之前的笔记）。有 guide.md 就通读。有 rule.md 就读完，不要改它。用户没指定世界大小时，spec.json 的 map_size 写 large。",
+    "然后按 context.md 的进度玩。每一回合先看局面和上一份 strategy.md。长期目标、中期目标、短期目标都要写明做到第几回合。现在的回合还没过那个回合，而且目标对得上局面，就原样沿用，不要改写；有 guide.md 时还要对得上攻略。违反 rule.md 里生效的法则也算对不上。回合已经过了、目标已经做到，或对不上，才改那一个，并写上新的回合。这一回合的做法按这些目标重写进 strategy.md，再按 rule.md 核对，不通过就改写并再核对，通过后再按它玩。结束前更新 notes.md，最后用一两句中文说明这一段做了什么。",
   ].join("\n");
 }
 

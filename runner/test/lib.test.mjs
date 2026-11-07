@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { plan } from "js-agent-runtime";
-import { CLI, RUNNER_DIR, buildPrompt, describeEvent, lastJson, loadTargets, pickTarget, segmentGoal } from "../lib.mjs";
+import { CLI, RUNNER_DIR, buildPrompt, describeEvent, lastJson, loadGuides, loadTargets, pickTarget, segmentGoal } from "../lib.mjs";
 
 const example = path.join(RUNNER_DIR, "targets.example.json");
 
@@ -24,6 +24,19 @@ test("the example has a target for every built-in harness", () => {
   assert.equal(pickTarget(loaded).name, "claude");
   assert.equal(pickTarget(loaded, "codex").harness.adapter, "codex");
   assert.throws(() => pickTarget(loaded, "gemini"), /No target gemini/u);
+});
+
+test("the guide registry names the two markdown files", () => {
+  const guides = loadGuides();
+  assert.deepEqual(Object.keys(guides), ["jin-yuan", "jin-yuan-rush"]);
+  assert.equal(guides["jin-yuan"].file, "jin-yuan.md");
+  assert.equal(guides["jin-yuan-rush"].file, "jin-yuan-rush.md");
+  const { file, done } = targetsFile({ side: { title: "旁", file: "../rule.md" } });
+  try {
+    assert.throws(() => loadGuides(file), /markdown file/u);
+  } finally {
+    done();
+  }
 });
 
 test("bad targets are refused before anything runs", () => {

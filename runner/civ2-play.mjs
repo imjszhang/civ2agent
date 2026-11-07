@@ -8,9 +8,17 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { plan, probe, run } from "js-agent-runtime";
-import { CLI, RUNNER_DIR, buildPrompt, describeEvent, lastJson, loadTargets, pickTarget, segmentGoal } from "./lib.mjs";
+import { CLI, RUNNER_DIR, buildPrompt, describeEvent, lastJson, loadGuides, loadTargets, pickTarget, segmentGoal } from "./lib.mjs";
 
-const HELP = `用法：
+function usage() {
+  let listed = "（注册表读不了）";
+  try {
+    const pairs = Object.entries(loadGuides());
+    listed = pairs.length ? pairs.map(([name, item]) => `${name}（${item.title}）`).join("、") : "无";
+  } catch {
+    listed = "（注册表读不了）";
+  }
+  return `用法：
   node civ2-play.mjs targets
   node civ2-play.mjs probe [--target NAME]
   node civ2-play.mjs new (--spec FILE | --request 文字) [--title T] [--guide jin-yuan] [选项]
@@ -23,8 +31,9 @@ const HELP = `用法：
   --segment-turns K    每段 agent 运行玩多少回合，默认 5
   --segment-minutes M  每段最长多少分钟，默认 60
   --keep-open          玩完不收尾（不退出游戏，锁也留着）
-  --guide NAME         可选攻略：jin-yuan、jin-yuan-rush。agent 通读全文。无论有没有攻略，每回合都自己写 strategy.md，再按 rule.md 核对
+  --guide NAME         可选攻略，名字在 runner/guides/registry.json 注册。现有：${listed}。agent 通读全文。无论有没有攻略，每回合都自己写 strategy.md，再按 rule.md 核对
   --python PATH        运行 civ2 命令行的 Python，默认 CIV2AGENT_PYTHON 或 python`;
+}
 
 const python = () => options.python ?? process.env.CIV2AGENT_PYTHON ?? "python";
 let options = {};
@@ -127,7 +136,7 @@ async function main(argv) {
     segmentMinutes: int(values["segment-minutes"]), keepOpen: values["keep-open"], python: values.python,
   };
   const [command, dirArg] = positionals;
-  if (values.help || !command) return { ok: true, usage: HELP };
+  if (values.help || !command) return { ok: true, usage: usage() };
   if (command === "targets") {
     const loaded = targets();
     return { ok: true, default: loaded.default, targets: Object.values(loaded.targets).map(t => ({ name: t.name, ...t.harness, auth: t.backend.auth })) };
@@ -158,7 +167,7 @@ async function main(argv) {
     if (!resumed.ok) return resumed;
     return playSession(dir, controller.signal);
   }
-  throw new Error(`没有命令 ${command}\n${HELP}`);
+  throw new Error(`没有命令 ${command}\n${usage()}`);
 }
 
 main(process.argv.slice(2)).then(

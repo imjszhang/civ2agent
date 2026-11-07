@@ -187,12 +187,13 @@ python civ2agent\cli\civ2session.py resume 目录 [--guide jin-yuan]
 python civ2agent\cli\civ2session.py close [--status paused|ended] [--keep-running]
 python civ2agent\cli\civ2session.py status [目录]
 python civ2agent\cli\civ2session.py list
+python civ2agent\cli\civ2session.py guides
 ```
 
 - `new --spec`：建目录，备份用户的文件，启动游戏，按 spec 回答开局对话框，进入第一回合。游戏开局时的消息（「在一开始」、初学者指导）按确定，内容记进 `session.json` 的 `setup`；第一个要做选择的对话框（如研究项）留给 agent，返回 `dialog`。spec 没写到、又要做选择的开局对话框返回 `modal_open`：用 `civ2ctl.py respond` 回答，再运行 `setup 目录` 接着开局。
 - `checkpoint`：回合开始、没有对话框也没有城市窗口时运行。经游戏菜单存成 `saves/T0042.SAV`（同一回合再运行什么也不存），在 `turns.jsonl` 记一行，第 1 回合和每第 10 回合在 `snapshots/` 存一份完整局面。只保留最近 10 回合和每第 10 回合的存档。
 - `resume 目录`：启动游戏（已在运行且就是这局时直接接上），读这局最新的存档，核对文明、领袖是这一局。
-- `--guide jin-yuan` 或 `--guide jin-yuan-rush`：可选。前者是金元帝国攻略，后者是金元帝国·神级快攻。`context` 把全文写入 `agent/guide.md`。agent 一段开始时通读。不选则没有 `guide.md`。无论有没有攻略，每一回合都覆盖 `strategy.md`：长期、中期、短期目标各自写明做到第几回合；现在的回合还没过那个回合，而且目标对得上，就原样沿用；过了、做到了或对不上，才改那一个并写上新的回合。这一回合的做法按这些目标重写。有攻略时，对不上还包括和攻略对不上。违反 `rule.md` 里生效的法则也算对不上：写完策略后核对，不通过就改写再核对，通过后才下令。`resume --guide` 在读档之前记下攻略，可以给已经开的局加上或换上。未知名字直接拒绝。
+- `--guide`：可选。名字在 `runner/guides/registry.json` 注册，一项一个名字，带 `title` 和同目录下的一份 md（`file`）。现在是 `jin-yuan`（金元帝国，`jin-yuan.md`）和 `jin-yuan-rush`（金元帝国·神级快攻，`jin-yuan-rush.md`）。要加一份，把 md 放到这个目录并在注册表写上名字，不要把别的攻略或 docx 放进来。`guides` 列出已注册的。`context` 把全文写入 `agent/guide.md`。agent 一段开始时通读。不选则没有 `guide.md`。无论有没有攻略，每一回合都覆盖 `strategy.md`：长期、中期、短期目标各自写明做到第几回合；现在的回合还没过那个回合，而且目标对得上，就原样沿用；过了、做到了或对不上，才改那一个并写上新的回合。这一回合的做法按这些目标重写。有攻略时，对不上还包括和攻略对不上。违反 `rule.md` 里生效的法则也算对不上：写完策略后核对，不通过就改写再核对，通过后才下令。`resume --guide` 在读档之前记下攻略，可以给已经开的局加上或换上。未知名字直接拒绝。
 - `close`：存盘点，离开并退出游戏，恢复用户的文件，解锁。`--status ended` 表示这局已经结束。
 - `status`、`list`：一局的 `session.json`、最近几回合和游戏状态；所有局的概要。
 
@@ -279,7 +280,7 @@ node civ2-play.mjs resume ..\games\<id> --guide jin-yuan --turns 30
 
 - `targets.json`（不进 git）：名字到 js-agent-runtime 的 target（`harness`、`backend`），`default` 是不给 `--target` 时用的。每段都可以换一个 agent。
 - 每一段：`civ2session.py context` 写好 agent 目录（`playbook.md`、`brief.md`、`context.md`、`notes.md`、`rule.md`，选了攻略时还有全文 `guide.md`），agent 在 `agent/` 里运行，目标是往后玩 `--segment-turns` 个回合（默认 5）。有 `guide.md` 时这一段开始通读一次。每一回合都按画面覆盖 `strategy.md`，再按 `rule.md` 核对，通过后才操作。之后在 `runs.jsonl` 记一行（状态、回合、用量、agent 的总结），运行记录在 `runs/`。玩够 `--turns`（默认 10）、某段失败或 agent 没有往前玩就停下，然后 `close`。Ctrl+C 也会停下并 `close`；`--keep-open` 不收尾。
-- `--guide jin-yuan`：传给 `new` 或 `resume`。不选则和以前一样，没有攻略。
+- `--guide`：传给 `new` 或 `resume`，名字须已在 `runner/guides/registry.json` 注册。不选则和以前一样，没有攻略。
 - `new --request`：第一段的 agent 按用户的原话写 `spec.json` 并 `setup`，然后接着玩。
 - agent 要运行 Python 和 `civ2ctl.py`（命名管道），少数对话框要用真实鼠标。js-agent-runtime 0.2.1 起 `run()` 在 Windows 上可用：超时和中断用 `taskkill /T /F` 结束进程树，比 POSIX 的进程组弱，根进程退出后它拉起的后台进程可能还在。`harness.executable` 必须是原生 `.exe`，不能是 npm 的 `.cmd`。0.2.2 起 Cursor Agent 也能在 Windows 上跑：`executable` 填版本目录里的 `node.exe`（不要填 `agent.cmd`），`cursor-login` 要加 `useCurrentUserHomeForLogin: true`。Windows 上 Claude Code 没有沙箱，用 `permission: bypass`。Codex、DeepSeek Harness、OpenCode 的沙箱在 Windows 上还没验证过。
 - `--python` 或 `CIV2AGENT_PYTHON` 指定运行命令行的 Python。

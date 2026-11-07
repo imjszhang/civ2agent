@@ -310,7 +310,32 @@ class Lifecycle(unittest.TestCase):
         folder = Path(out["dir"])
         code, out = run(["resume", str(folder), "--guide", "no-such"])
         self.assertEqual((code, out["error"]), (2, "usage"))
+        self.assertIn("jin-yuan", out["reason"])
         self.assertIsNone(json.loads((folder / "session.json").read_text(encoding="utf-8")).get("guide"))
+
+    def test_guides_are_the_registry_and_only_those_files(self):
+        code, out = run(["guides"])
+        self.assertEqual(code, 0)
+        self.assertEqual([(g["name"], g["title"], g["file"]) for g in out["guides"]], [
+            ("jin-yuan", "金元帝国", "jin-yuan.md"),
+            ("jin-yuan-rush", "金元帝国·神级快攻", "jin-yuan-rush.md"),
+        ])
+        folder = session.GUIDE_REGISTRY.parent
+        self.assertEqual(sorted(p.name for p in folder.iterdir()),
+                         ["jin-yuan-rush.md", "jin-yuan.md", "registry.json"])
+        regdir = Path(self.tmp.name) / "guides"
+        regdir.mkdir()
+        (regdir / "one.md").write_text("一份全文\n", encoding="utf-8")
+        reg = regdir / "registry.json"
+        reg.write_text(json.dumps({"one": {"title": "一份", "file": "one.md"}}, ensure_ascii=False), encoding="utf-8")
+        self.assertEqual(session.chosen_guide("one", reg), "one")
+        with self.assertRaises(session.SessionError) as caught:
+            session.chosen_guide("jin-yuan", reg)
+        self.assertIn("one", caught.exception.response["reason"])
+        (regdir / "outside.json").write_text(json.dumps({"evil": {"title": "外", "file": "../rule.md"}}), encoding="utf-8")
+        with self.assertRaises(session.SessionError) as caught:
+            session.load_guides(regdir / "outside.json")
+        self.assertIn("同一目录", caught.exception.response["reason"])
 
     def test_checkpoint_archives_the_strategy_once_per_turn(self):
         folder = Path(self.tmp.name) / "archive"

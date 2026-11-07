@@ -35,6 +35,29 @@ export function loadTargets(file) {
   return { default: raw.default ?? Object.keys(targets)[0], targets };
 }
 
+/** Optional guides from registry.json: { name: { title, file } }. The markdown sits beside that file. */
+export function loadGuides(file = path.join(RUNNER_DIR, "guides", "registry.json")) {
+  let raw;
+  try {
+    raw = JSON.parse(readFileSync(file, "utf8"));
+  } catch (cause) {
+    throw new Error(`Cannot read guide registry ${file}: ${cause.message}`);
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw))
+    throw new Error(`${file} must be an object of guide name to { title, file }`);
+  const guides = {};
+  for (const [name, item] of Object.entries(raw)) {
+    if (!item || typeof item.title !== "string" || !item.title.trim() || typeof item.file !== "string")
+      throw new Error(`Guide ${name} needs a title and a file`);
+    const fileName = item.file.replaceAll("\\", "/");
+    if (!name || fileName.includes("..") || fileName.startsWith("/") || /^[a-z]:/iu.test(fileName) ||
+        !fileName.toLowerCase().endsWith(".md"))
+      throw new Error(`Guide ${name} must name a markdown file next to the registry`);
+    guides[name] = { title: item.title, file: item.file };
+  }
+  return guides;
+}
+
 export function pickTarget(loaded, name) {
   const chosen = name ?? loaded.default;
   const target = loaded.targets[chosen];

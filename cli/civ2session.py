@@ -46,11 +46,7 @@ GAME_ROOT = ctl.GAME_ROOT
 LAUNCHER = AGENT_ROOT / "build" / "bin" / "civ2agent-launch.exe"
 PLAYBOOK = AGENT_ROOT / "runner" / "playbook.md"
 RULES = AGENT_ROOT / "runner" / "rule.md"
-GUIDES = {
-    "jin-yuan": AGENT_ROOT / "runner" / "guides" / "jin-yuan.md",
-    "jin-yuan-rush": AGENT_ROOT / "runner" / "guides" / "jin-yuan-rush.md",
-}
-GUIDE_TITLES = {"jin-yuan": "金元帝国", "jin-yuan-rush": "金元帝国·神级快攻"}
+GUIDE_REGISTRY = AGENT_ROOT / "runner" / "guides" / "registry.json"
 DAT_FILES = ("CIV2.DAT", "HALLFAME.DAT")
 KEEP_RECENT = 10  # turn saves kept besides every tenth turn
 SNAPSHOT_EVERY = 10
@@ -729,15 +725,51 @@ def saved_screen_lines(turn):
     return lines
 
 
-def chosen_guide(name):
-    """A known guide id, or None. An unknown name is refused before a folder
-    is created or a save is loaded."""
+def load_guides(registry=None):
+    """Optional guides. Register one by adding its name to registry.json and
+    putting the markdown file in the same directory. Nothing else is a guide."""
+    registry = Path(registry) if registry is not None else GUIDE_REGISTRY
+    try:
+        raw = json.loads(registry.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise SessionError("usage", f"攻略注册表读不了：{exc}")
+    if not isinstance(raw, dict):
+        raise SessionError("usage", "攻略注册表须是对象：名字到 {title, file}")
+    root = registry.parent.resolve()
+    guides = {}
+    for name, item in raw.items():
+        if not isinstance(name, str) or not name or not isinstance(item, dict):
+            raise SessionError("usage", "攻略注册表的每一项须是名字到 {title, file}")
+        title, file = item.get("title"), item.get("file")
+        if not isinstance(title, str) or not title.strip() or not isinstance(file, str) or not file.strip():
+            raise SessionError("usage", f"攻略 {name} 须有 title 和 file")
+        path = (registry.parent / file).resolve()
+        try:
+            path.relative_to(root)
+        except ValueError:
+            raise SessionError("usage", f"攻略 {name} 的文件须在注册表同一目录")
+        if path == root or path.suffix.lower() != ".md":
+            raise SessionError("usage", f"攻略 {name} 须指向同目录的 md 文件")
+        guides[name] = {"title": title, "file": file, "path": path}
+    return guides
+
+
+def guide_record(name, registry=None):
+    """One registered guide whose markdown is on disk."""
+    guides = load_guides(registry)
+    item = guides.get(name)
+    if item is None or not item["path"].is_file():
+        known = "、".join(guides) or "无"
+        raise SessionError("usage", f"没有攻略 {name}，可选：{known}")
+    return item
+
+
+def chosen_guide(name, registry=None):
+    """A registered guide name, or None. An unknown name is refused before a
+    folder is created or a save is loaded."""
     if not name:
         return None
-    path = GUIDES.get(name)
-    if path is None or not path.is_file():
-        known = "、".join(GUIDES) or "无"
-        raise SessionError("usage", f"没有攻略 {name}，可选：{known}")
+    guide_record(name, registry)
     return name
 
 
@@ -750,8 +782,7 @@ def place_guide(agent, session):
         if target.exists():
             target.unlink()
         return
-    chosen_guide(name)
-    shutil.copy2(GUIDES[name], target)
+    shutil.copy2(guide_record(name)["path"], target)
 
 
 def place_rules(agent):
@@ -763,7 +794,7 @@ def place_rules(agent):
 def write_brief(path, session):
     lines = [f"# {session['title']}", "", f"游戏局 {session['id']}，{session['created']} 建立。", ""]
     if session.get("guide"):
-        lines += [f"攻略：{GUIDE_TITLES.get(session['guide'], session['guide'])}", ""]
+        lines += [f"攻略：{guide_record(session['guide'])['title']}", ""]
     if session.get("request"):
         lines += ["## 用户的要求", "", session["request"], ""]
     if session.get("spec"):
@@ -1080,6 +1111,13 @@ class Parser(argparse.ArgumentParser):
         raise SessionError("usage", message)
 
 
+def cmd_guides(_args):
+    guides = load_guides()
+    return {"ok": True, "guides": [
+        {"name": name, "title": item["title"], "file": item["file"]} for name, item in guides.items()
+    ]}
+
+
 def build_parser():
     parser = Parser(prog="civ2session.py", description="agent 自己的文明 II 游戏局：每局一个目录，可以接着玩。")
     sub = parser.add_subparsers(dest="cmd", metavar="命令", parser_class=Parser)
@@ -1089,7 +1127,7 @@ def build_parser():
     p.add_argument("--request", help="用户的原话，记进 brief.md")
     p.add_argument("--title", help="这局的名字")
     p.add_argument("--id", help="目录名里的英文标识，如 romans-king")
-    p.add_argument("--guide", help="可选攻略，如 jin-yuan；全文写入 guide.md，strategy.md 由 agent 自己写")
+    p.add_argument("--guide", help="registry.json 里注册的攻略名，如 jin-yuan；全文写入 guide.md")
     p.set_defaults(run=cmd_new)
     p = sub.add_parser("setup", help="按目录里的 spec.json 启动游戏并开局")
     p.add_argument("dir")
@@ -1098,8 +1136,10 @@ def build_parser():
     p.set_defaults(run=cmd_checkpoint)
     p = sub.add_parser("resume", help="从目录接着玩：启动游戏，读最新的存档，核对是这一局")
     p.add_argument("dir")
-    p.add_argument("--guide", help="给这局加上或换上攻略，如 jin-yuan")
+    p.add_argument("--guide", help="给这局加上或换上 registry.json 里注册的攻略")
     p.set_defaults(run=cmd_resume)
+    p = sub.add_parser("guides", help="列出 registry.json 里注册的可选攻略")
+    p.set_defaults(run=cmd_guides)
     p = sub.add_parser("close", help="收尾：存盘点，离开并退出游戏，恢复用户的文件，解锁")
     p.add_argument("--status", choices=("paused", "ended"), default="paused")
     p.add_argument("--keep-running", action="store_true", help="不退出游戏（用户的 CIV2.DAT、HALLFAME.DAT 不恢复）")
@@ -1140,7 +1180,7 @@ def main(argv):
         response = fail("cli_fault", f"{type(exc).__name__}: {exc}")
     print(json.dumps(response, ensure_ascii=False))
     folder = folder or (Path(response["dir"]) if response.get("dir") else None)
-    if args is not None and args.cmd not in ("list", "status", "context") and folder and \
+    if args is not None and args.cmd not in ("list", "status", "context", "guides") and folder and \
             (folder / "session.json").is_file():
         try:
             append_jsonl(folder / "log.jsonl", {"time": now(), "command": f"session {args.cmd}", "response": response})

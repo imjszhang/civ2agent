@@ -218,7 +218,8 @@ def current_dialog():
 def dialog_key(dialog):
     if not dialog:
         return None
-    return (dialog.get("title"), dialog.get("text"), tuple(o.get("text") for o in dialog.get("options") or []))
+    return (dialog.get("title"), dialog.get("text"), tuple(o.get("text") for o in dialog.get("options") or []),
+            dialog.get("selected"))
 
 
 def choose(request, connect_s=10.0, settle_s=2.0):

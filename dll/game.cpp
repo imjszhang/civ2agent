@@ -1284,23 +1284,48 @@ void PostKey(HWND hwnd, UINT vk) {
   PostMessageA(hwnd, WM_KEYUP, vk, up);
 }
 
+// The research chooser. Its list rows are technologies; 确定 commits whichever
+// row is highlighted, which starts as the first row. Reporting 确定 beside the
+// technologies makes an agent lock the default by pressing it.
+bool ResearchDialog(void* dlg) {
+  const char* title = *reinterpret_cast<const char**>(static_cast<char*>(dlg) + kDlgTitle);
+  return ReadGameText(title, 120).find("专心研究") != std::string::npos;
+}
+
 std::string DialogOptionsJson(void* dlg) {
   DialogChoices dc = ChoicesFor(dlg);
+  bool research = ResearchDialog(dlg);
   std::string out = std::string("\"kind\":") + JsonString(dc.is_list ? "list" : "controls");
-  // The row highlighted when the dialog opened.
+  // The row highlighted when the dialog opened. On the research chooser this
+  // is the row index among technologies, and selected follows later choices.
   if (dc.is_list) out += ",\"default\":" + std::to_string(dc.default_index);
+  if (research) out += ",\"selected\":" + std::to_string(dc.default_index);
   // game: respond calls the dialog's own handler; mouse: it clicks.
   out += std::string(",\"via\":") + JsonString(dc.native ? "game" : "mouse");
   out += ",\"options\":[";
-  for (size_t i = 0; i < dc.choices.size(); ++i) {
-    const MenuChoice& c = dc.choices[i];
-    if (i) out += ',';
-    out += std::string("{\"index\":") + std::to_string(i) + ",\"text\":" + JsonString(c.text);
+  bool first = true;
+  int shown = 0;
+  for (const MenuChoice& c : dc.choices) {
+    if (research && c.answer == Answer::Button) continue;
+    if (!first) out += ',';
+    first = false;
+    out += std::string("{\"index\":") + std::to_string(shown++) + ",\"text\":" + JsonString(c.text);
     if (c.record || c.list_id >= 0) out += ",\"id\":" + std::to_string(c.list_id);
     if (c.disabled) out += ",\"disabled\":true";
     out += "}";
   }
   out += "]";
+  if (research) {
+    out += ",\"buttons\":[";
+    bool button = true;
+    for (const MenuChoice& c : dc.choices) {
+      if (c.answer != Answer::Button) continue;
+      if (!button) out += ',';
+      button = false;
+      out += JsonString(c.text);
+    }
+    out += "]";
+  }
   return out;
 }
 
@@ -1427,6 +1452,19 @@ std::string ClickMenuOption(int index, const std::string& text, const std::vecto
   if (index < 0 || index >= static_cast<int>(choices.size())) return ErrJson("illegal", "选项下标超出范围");
   const MenuChoice& choice = choices[index];
   std::string head = std::string("\"index\":") + std::to_string(index) + ",\"text\":" + JsonString(choice.text);
+  // Research: a technology only moves the highlight. 确定 commits that row.
+  // Pressing 确定 by itself still commits whatever was already highlighted.
+  if (ResearchDialog(dlg) && choice.answer == Answer::ListRow) {
+    if (choice.disabled) return ErrJson("illegal", "这一行不可选");
+    *reinterpret_cast<const char**>(static_cast<char*>(dlg) + kDlgListSelected) = choice.record;
+    return OkJson(head + ",\"via\":\"game\",\"selected\":true");
+  }
+  if (ResearchDialog(dlg) && choice.answer == Answer::Button && choice.std_type == kStdButtonOk) {
+    const char* rec = *reinterpret_cast<const char**>(static_cast<char*>(dlg) + kDlgListSelected);
+    if (!rec) return ErrJson("illegal", "还没有选中科技，先点科技名再确定");
+    if (SehDlgSelectRow(dlg, rec)) return ErrJson("game_fault", "对话框处理函数异常");
+    return OkJson(head + ",\"via\":\"game\"");
+  }
   if (edits) {
     if (choice.disabled) return ErrJson("illegal", "这一行不可选");
     std::string refused = SetDialogEdits(dlg, *edits);

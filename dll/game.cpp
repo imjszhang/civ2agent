@@ -980,9 +980,12 @@ std::vector<ListLine> ReadDialogList(void* dlg, int* selected) {
   while (rec && lines.size() < 64 && Readable(rec, kListNext + sizeof(char*))) {
     const char* text = *reinterpret_cast<const char* const*>(rec + kListText);
     std::string label = CleanListText(ReadGameText(text, 160));
-    if (label.empty()) break;
-    if (selected && rec == current) *selected = static_cast<int>(lines.size());
-    lines.push_back({rec, *reinterpret_cast<const int*>(rec + kListId), label});
+    // Icon rows (the unit stack) store a unit index and draw the picture
+    // instead of a caption. An empty caption is not the end of the list.
+    if (!label.empty()) {
+      if (selected && rec == current) *selected = static_cast<int>(lines.size());
+      lines.push_back({rec, *reinterpret_cast<const int*>(rec + kListId), label});
+    }
     rec = *reinterpret_cast<const char* const*>(rec + kListNext);
   }
   return lines;
@@ -1178,11 +1181,90 @@ struct DialogChoices {
   int default_index = -1;  // option highlighted in the dialog, lists only
 };
 
+// "选择现役部队": several units on one tile. The rows are icon pictures, so
+// the caption is empty and only 确定/取消 used to be reported. 确定 then
+// activates whichever row was highlighted. Each row's id is the unit index.
+bool UnitStackDialog(void* dlg) {
+  const char* title = *reinterpret_cast<const char**>(static_cast<char*>(dlg) + kDlgTitle);
+  return ReadGameText(title, 120).find("选择现役部队") != std::string::npos;
+}
+
+std::string UnitTypeName(int unit) {
+  auto* types = Types();
+  int type = Units()[unit].type;
+  if (type < 0 || type >= 62 || !Readable(types + type, sizeof(UnitType))) return "单位";
+  std::string name = ReadGameText(SehString(types[type].string_index), 40);
+  return name.empty() ? "单位" : name;
+}
+
+// Cancel, so a wrong stack can be dismissed. 确定 is left out: it commits the
+// highlighted row, which is not the unit the caller asked for.
+void AppendCancel(void* dlg, std::vector<MenuChoice>& out) {
+  auto* base = static_cast<char*>(dlg);
+  int std_buttons = *reinterpret_cast<int*>(base + kDlgNumButtonsStd);
+  int custom = *reinterpret_cast<int*>(base + kDlgNumButtons);
+  if (std_buttons < 0 || std_buttons > 3 || custom < 0 || custom > 6) return;
+  auto** captions = At<const char*>(kVaPopupCaptions);
+  auto** texts = reinterpret_cast<const char**>(base + kDlgButtonTexts);
+  for (int i = 0; i < std_buttons + custom; ++i) {
+    const int* layout = reinterpret_cast<const int*>(base + kDlgButtonLayout + i * 8);
+    if (!Readable(layout, 8)) return;
+    const char* caption = nullptr;
+    int std_type = -1;
+    if (i < std_buttons) {
+      std_type = layout[0];
+      if (std_type >= 0 && std_type <= 2 && Readable(captions + std_type, sizeof(char*))) caption = captions[std_type];
+    } else if (Readable(texts + (i - std_buttons), sizeof(char*))) {
+      caption = texts[i - std_buttons];
+    }
+    std::string text = ReadGameText(caption, 80);
+    if (std_type != kStdButtonCancel && text != "取消") continue;
+    MenuChoice choice;
+    choice.text = text.empty() ? "取消" : text;
+    choice.answer = Answer::Button;
+    choice.control_id = kButtonIdBase + i;
+    choice.std_type = std_type;
+    out.push_back(choice);
+    return;
+  }
+}
+
+bool BuildUnitStackChoices(void* dlg, std::vector<MenuChoice>& out) {
+  if (!UnitStackDialog(dlg)) return false;
+  auto* base = static_cast<char*>(dlg);
+  if (!Readable(base, 0x2F4)) return false;
+  int total = 0;
+  if (MatchLive()) {
+    total = G()->total_units;
+    if (total < 0 || total > kUnitSlots) total = 0;
+  }
+  const char* rec = *reinterpret_cast<const char**>(base + kDlgListHead);
+  for (int n = 0; rec && n < 64 && Readable(rec, kListNext + sizeof(char*)); ++n) {
+    int id = *reinterpret_cast<const int*>(rec + kListId);
+    MenuChoice choice;
+    choice.record = rec;
+    choice.list_id = id;
+    choice.row = n;
+    choice.answer = Answer::ListRow;
+    if (id >= 0 && id < total && Units()[id].id != 0) {
+      choice.text = UnitTypeName(id) + " #" + std::to_string(id);
+      choice.list_id = id;
+    } else {
+      choice.text = CleanListText(ReadGameText(*reinterpret_cast<const char* const*>(rec + kListText), 160));
+    }
+    if (!choice.text.empty()) out.push_back(choice);
+    rec = *reinterpret_cast<const char* const*>(rec + kListNext);
+  }
+  if (out.empty()) return false;
+  AppendCancel(dlg, out);
+  return true;
+}
+
 // The options that act respond picks from, so an index read from a report
 // is valid when answering the same dialog.
 DialogChoices ChoicesFor(void* dlg) {
   DialogChoices out;
-  if (BuildNativeChoices(dlg, out.choices)) {
+  if (BuildUnitStackChoices(dlg, out.choices) || BuildNativeChoices(dlg, out.choices)) {
     out.native = true;
     const char* current = *reinterpret_cast<const char**>(static_cast<char*>(dlg) + kDlgListSelected);
     for (size_t i = 0; i < out.choices.size(); ++i) {
@@ -3336,8 +3418,8 @@ std::string GameActJson(const ActArgs& a) {
     if (Moving(unit)) return OkJson(UnitBrief(unit) + ",\"changed\":false");
     if (MovesLeft(unit) <= 0) return ErrJson("illegal", "这个单位这回合已经没有移动力");
     const Unit& u = Units()[unit];
-    // On a stack the click opens the units-list popup: this returns
-    // modal_open with it, and the agent picks the unit by its id.
+    // On a stack the click opens 选择现役部队. Rows are reported as
+    // "兵种 #index"; respond with that text. 确定 is not an option.
     if (SehClickUnit(u.x, u.y)) return ErrJson("game_fault", "选中单位时出错");
     RefreshShadow();
     if (!Moving(unit)) return ErrJson("illegal", "点了这个单位也选不中它，它这回合已经不能行动");

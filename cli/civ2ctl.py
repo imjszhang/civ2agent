@@ -616,8 +616,8 @@ COMMANDS = (
                     Param("file", "string", "Windows 文件对话框（kind 为 file）：先在文件名框填这个路径；只给它时按保存或打开")),
             build=build_respond, answers_dialog=True),
     Command("activate", "act",
-            "选中一个己方单位，相当于在地图上点它（会叫醒睡眠或设防的单位）。同一格有几个单位时游戏弹出单位列表，"
-            "返回 modal_open，用 respond 选。",
+            "选中一个己方单位，相当于在地图上点它（会叫醒睡眠或设防的单位）。同一格有几个单位时游戏弹出「选择现役部队」，"
+            "返回 modal_open。用 respond --text 选「兵种 #index」（例如「战士 #17」），不要选「确定」。",
             params=(UNIT,), build=request("act", "activate")),
     Command("move", "act", "让单位朝相邻一格走一步，相当于按一次方向键；可能触发战斗或对话框。",
             params=(UNIT, TARGET_X, TARGET_Y), build=request("act", "move")),

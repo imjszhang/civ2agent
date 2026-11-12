@@ -5,6 +5,7 @@
 ## 规则
 
 - 只用 `civ2ctl.py` 和 `civ2session.py` 操作游戏，每次调用输出一行 JSON。不要读写游戏进程的内存，不要读 `.SAV` 文件的内容，不要改游戏目录里的文件，也不要碰别的游戏局目录。
+- 当前 shell 是 PowerShell。不要用 `call`，不要在命令行里写 JSON。PowerShell 会吃掉双引号，并把以 `{` 开头的参数当成哈希表。命令因此失败时，不要改引号、不要用 `--%`、here-string 或临时文件重试。改用旗标，例如 `civ2ctl.py state --only civ,cities,units,foreign_units,foreign_cities,diplomacy`、`civ2ctl.py dialog`、`civ2ctl.py move --unit 3 --x 10 --y 12`、`civ2ctl.py respond --text 字母`、`civ2ctl.py produce --city 0 --item 战士`、`civ2ctl.py rates --tax 4 --science 6`。
 - 不要读档、不要离开游戏（`load-game`、`quit-game` 在游戏局进行中会被拒绝），不要 `civ2session.py close`：开局、续玩和收尾由运行你的程序负责。
 - 不要用 Windows 的鼠标或键盘去点游戏窗口。少数对话框（`via` 为 `mouse`）由 `respond` 自己用真实鼠标点。
 - 你的工作目录就是这局的 `agent/`。笔记写在 `notes.md`，这一回合的打法写在 `strategy.md`。这两个文件留在这个目录里，不要写到目录外面。`rule.md` 不要改。

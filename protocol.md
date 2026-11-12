@@ -15,9 +15,14 @@ agent 通过 `cli/civ2ctl.py` 观察和操作《文明 II》。注入游戏的 `
 ## 调用
 
 ```text
-python civ2agent\cli\civ2ctl.py <命令> [参数]
-python civ2agent\cli\civ2ctl.py call <命令> '<JSON 参数>'
+python civ2agent\cli\civ2ctl.py <命令> [旗标]
 python civ2agent\cli\civ2ctl.py tools
+```
+
+玩的时候用旗标，不要用 `call`。agent 的 shell 是 PowerShell，双引号会被吃掉，以 `{` 开头的参数会变成哈希表。`call` 只在能原样保留 JSON 的环境里用；参数写 `-` 时从 stdin 读。
+
+```text
+python civ2agent\cli\civ2ctl.py call <命令> '<JSON 参数>'
 ```
 
 - 每次调用在 stdout 输出一行 JSON，一定有 `ok`。失败时还有 `error`（错误码，见下文）和 `reason`（中文说明）。

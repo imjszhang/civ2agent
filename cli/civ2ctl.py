@@ -734,7 +734,7 @@ def build_parser():
             add_param(p, param)
     p = sub.add_parser("tools", help="输出全部命令的 JSON Schema，可直接作为 agent 的工具定义。")
     add_globals(p, suppress=True)
-    p = sub.add_parser("call", help="用 JSON 参数运行一个命令，如 call move '{\"unit\":3,\"x\":4,\"y\":2}'；参数为 - 时从 stdin 读。")
+    p = sub.add_parser("call", help="调试用。玩的时候不要用：PowerShell 会吃掉 JSON 引号。用各命令自己的旗标。参数为 - 时从 stdin 读。")
     add_globals(p, suppress=True)
     p.add_argument("tool")
     p.add_argument("arguments", nargs="?", default="{}")
@@ -768,7 +768,8 @@ def manifest():
             "input_schema": {"type": "object", "properties": properties, "required": required,
                              "additionalProperties": False},
         })
-    return {"ok": True, "protocol": PROTOCOL, "usage": "civ2ctl.py call <name> '<JSON arguments>'",
+    return {"ok": True, "protocol": PROTOCOL,
+            "usage": "civ2ctl.py <命令> [旗标]。不要用 call 传 JSON：PowerShell 会吃掉双引号，并把 { 当成哈希表。",
             "exit_codes": {"0": "ok", "1": "游戏拒绝或失败", "2": "参数错误", "3": "连不上游戏或超时"},
             "tools": tools}
 
@@ -783,7 +784,11 @@ def call_args(name, text):
     try:
         given = json.loads(text) if text.strip() else {}
     except ValueError as exc:
-        raise UsageError(f"参数不是合法 JSON：{exc}")
+        raise UsageError(
+            f"参数不是合法 JSON：{exc}。PowerShell 吃掉了双引号，或把 {{ 当成了哈希表。"
+            "不要改引号、不要写临时文件、不要换 here-string 重试。"
+            "改用旗标：civ2ctl.py state --only civ,cities,units；"
+            "civ2ctl.py move --unit 3 --x 10 --y 12；civ2ctl.py respond --text 字母")
     if not isinstance(given, dict):
         raise UsageError("参数必须是 JSON 对象")
     params = {p.name: p for p in command.params if p.tool}
@@ -881,10 +886,20 @@ def emit(response, record=None, req=None, name=None):
     return exit_code(response)
 
 
+def quote_trap(argv):
+    """call with flags is the PowerShell quoting dead end. Say so before argparse."""
+    if not argv or argv[0] != "call" or len(argv) < 3:
+        return None
+    if not any(word.startswith("--") for word in argv[2:]):
+        return None
+    return ("call 不接受旗标，也不要改引号重试。PowerShell 会吃掉 JSON 的双引号。"
+            "直接运行：civ2ctl.py " + " ".join(argv[1:]))
+
+
 def main(argv):
     name = None
     try:
-        hint = renamed_hint(argv)
+        hint = renamed_hint(argv) or quote_trap(argv)
         if hint:
             raise UsageError(hint)
         args = build_parser().parse_args(argv)

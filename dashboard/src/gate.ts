@@ -26,15 +26,36 @@ export class Gate {
   private current: Current | null = null;
   private last: GateLast | null = null;
   private observers = 0;
+  private published: string | null = null;
 
-  constructor(private readonly idleMs: number, private readonly now: () => number = Date.now) {}
+  constructor(
+    private readonly idleMs: number,
+    private readonly now: () => number = Date.now,
+    private readonly onHolder: (holder: { lease: string; client: string } | null) => void = () => {},
+  ) {}
 
   private stamp(): string {
     return new Date(this.now()).toISOString();
   }
 
+  private publishHolder(): void {
+    const next = this.holder?.lease ?? null;
+    if (next === this.published) return;
+    this.published = next;
+    this.onHolder(this.holder ? { lease: this.holder.lease, client: this.holder.client } : null);
+  }
+
   private expire(): void {
-    if (this.holder && !this.current && this.now() - this.holder.touched >= this.idleMs) this.holder = null;
+    if (this.holder && !this.current && this.now() - this.holder.touched >= this.idleMs) {
+      this.holder = null;
+      this.publishHolder();
+    }
+  }
+
+  /** The lease the dashboard's own child processes must present, or null. */
+  leaseId(): string | null {
+    this.expire();
+    return this.holder?.lease ?? null;
   }
 
   private busyReason(): string {
@@ -70,6 +91,7 @@ export class Gate {
     const since = this.stamp();
     const lease = randomUUID();
     this.holder = { lease, client: name, since, touched: this.now() };
+    this.publishHolder();
     return { ok: true, lease, client: name, since };
   }
 
@@ -78,6 +100,7 @@ export class Gate {
     if (!this.holder || this.holder.lease !== lease) return { ok: false, error: "illegal", reason: "没有这张租约" };
     if (this.current || this.observers > 0) return { ok: false, error: "busy", reason: this.busyReason() };
     this.holder = null;
+    this.publishHolder();
     return { ok: true };
   }
 

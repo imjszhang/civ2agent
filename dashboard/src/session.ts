@@ -35,12 +35,17 @@ export function openGame(gamesDir: string, id: string): GameDir {
   return found;
 }
 
-export function sessionEnv(gamesDir: string): NodeJS.ProcessEnv {
-  return { ...process.env, CIV2AGENT_GAMES_DIR: gamesDir };
+export function sessionEnv(gamesDir: string, lease?: string | null): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, CIV2AGENT_GAMES_DIR: gamesDir };
+  if (lease) env.CIV2AGENT_LEASE = lease;
+  else delete env.CIV2AGENT_LEASE;
+  return env;
 }
 
-export function runSession(python: string, script: string, gamesDir: string, args: string[], timeoutMs: number): Promise<CliResult> {
-  return runCli(python, script, args, timeoutMs, sessionEnv(gamesDir));
+export function runSession(
+  python: string, script: string, gamesDir: string, args: string[], timeoutMs: number, lease?: string | null,
+): Promise<CliResult> {
+  return runCli(python, script, args, timeoutMs, sessionEnv(gamesDir, lease));
 }
 
 export function startArgs(spec: unknown, title?: string, request?: string, id?: string): string[] {

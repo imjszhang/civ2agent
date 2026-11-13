@@ -44,8 +44,11 @@ _spec.loader.exec_module(ctl)
 AGENT_ROOT = ctl.AGENT_ROOT
 LAUNCHER = AGENT_ROOT / "build" / "bin" / "civ2agent-launch.exe"
 PLAYBOOK = AGENT_ROOT / "runner" / "playbook.md"
-RULES = AGENT_ROOT / "runner" / "rule.md"
 GUIDE_REGISTRY = AGENT_ROOT / "runner" / "guides" / "registry.json"
+GUIDE_EXAMPLE = AGENT_ROOT / "runner" / "guides" / "registry.example.json"
+RULE_REGISTRY = AGENT_ROOT / "runner" / "rules" / "registry.json"
+RULE_EXAMPLE = AGENT_ROOT / "runner" / "rules" / "registry.example.json"
+DEFAULT_RULE = "basic"
 DAT_FILES = ("CIV2.DAT", "HALLFAME.DAT")
 KEEP_RECENT = 10  # turn saves kept besides every tenth turn
 SNAPSHOT_EVERY = 10
@@ -158,6 +161,9 @@ def game_root():
 def launch():
     """Start civ2.exe through the launcher (it returns once the DLL is in) and
     wait for the main menu."""
+    blocked = ctl.lease_block()
+    if blocked:
+        raise SessionError(blocked["error"], blocked["reason"])
     if not LAUNCHER.is_file():
         raise SessionError("game_fault", f"没有 {LAUNCHER}；先编译 civ2agent")
     root = game_root()
@@ -734,33 +740,42 @@ def saved_screen_lines(turn):
     return lines
 
 
-def load_guides(registry=None):
-    """Optional guides. Register one by adding its name to registry.json and
-    putting the markdown file in the same directory. Nothing else is a guide."""
-    registry = Path(registry) if registry is not None else GUIDE_REGISTRY
+def load_named_markdown(primary, example, registry=None):
+    """Optional texts. Register one by adding its name to registry.json and
+    putting the markdown file in the same directory. A missing local registry
+    falls back to the example."""
+    registry = Path(registry) if registry is not None else (primary if primary.is_file() else example)
     try:
         raw = json.loads(registry.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        raise SessionError("usage", f"攻略注册表读不了：{exc}")
+        raise SessionError("usage", f"注册表读不了：{exc}")
     if not isinstance(raw, dict):
-        raise SessionError("usage", "攻略注册表须是对象：名字到 {title, file}")
+        raise SessionError("usage", "注册表须是对象：名字到 {title, file}")
     root = registry.parent.resolve()
-    guides = {}
+    items = {}
     for name, item in raw.items():
         if not isinstance(name, str) or not name or not isinstance(item, dict):
-            raise SessionError("usage", "攻略注册表的每一项须是名字到 {title, file}")
+            raise SessionError("usage", "注册表的每一项须是名字到 {title, file}")
         title, file = item.get("title"), item.get("file")
         if not isinstance(title, str) or not title.strip() or not isinstance(file, str) or not file.strip():
-            raise SessionError("usage", f"攻略 {name} 须有 title 和 file")
+            raise SessionError("usage", f"{name} 须有 title 和 file")
         path = (registry.parent / file).resolve()
         try:
             path.relative_to(root)
         except ValueError:
-            raise SessionError("usage", f"攻略 {name} 的文件须在注册表同一目录")
+            raise SessionError("usage", f"{name} 的文件须在注册表同一目录")
         if path == root or path.suffix.lower() != ".md":
-            raise SessionError("usage", f"攻略 {name} 须指向同目录的 md 文件")
-        guides[name] = {"title": title, "file": file, "path": path}
-    return guides
+            raise SessionError("usage", f"{name} 须指向同目录的 md 文件")
+        items[name] = {"title": title, "file": file, "path": path}
+    return items
+
+
+def load_guides(registry=None):
+    return load_named_markdown(GUIDE_REGISTRY, GUIDE_EXAMPLE, registry)
+
+
+def load_rules(registry=None):
+    return load_named_markdown(RULE_REGISTRY, RULE_EXAMPLE, registry)
 
 
 def guide_record(name, registry=None):
@@ -794,16 +809,128 @@ def place_guide(agent, session):
     shutil.copy2(guide_record(name)["path"], target)
 
 
-def place_rules(agent):
-    """Copy rule.md into the agent folder. The agent reads it and does not edit it."""
-    if RULES.is_file():
-        shutil.copy2(RULES, agent / "rule.md")
+def rule_record(name, registry=None):
+    rules = load_rules(registry)
+    item = rules.get(name)
+    if item is None or not item["path"].is_file():
+        known = "、".join(rules) or "无"
+        raise SessionError("usage", f"没有法则 {name}，可选：{known}，或 none")
+    return item
+
+
+def chosen_rule(name, registry=None):
+    """A registered rule name. None means the caller did not choose, so the
+    basic rule is used. The name none means this game has no rule.md."""
+    if name == "none":
+        return None
+    return rule_record(name or DEFAULT_RULE, registry)["title"] and (name or DEFAULT_RULE)
+
+
+def rule_versions(path):
+    log = path / "agent" / "rules" / "log.jsonl"
+    rows = []
+    if not log.is_file():
+        return rows
+    for line in log.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(item, dict):
+            rows.append(item)
+    return rows
+
+
+def archive_rule(path):
+    """Keep the current rule.md of this game before it is replaced."""
+    src = path / "agent" / "rule.md"
+    if not src.is_file():
+        return None
+    text = src.read_text(encoding="utf-8")
+    if not text.strip():
+        return None
+    folder = path / "agent" / "rules"
+    folder.mkdir(parents=True, exist_ok=True)
+    previous = rule_versions(path)
+    number = (previous[-1].get("version") or 0) + 1 if previous else 1
+    name = f"v{number:04d}.md"
+    (folder / name).write_text(text, encoding="utf-8")
+    record = {"version": number, "time": now(), "file": name, "bytes": len(text.encode("utf-8"))}
+    append_jsonl(folder / "log.jsonl", record)
+    return record
+
+
+def write_rule_text(path, text):
+    """Replace this game's rule.md. The previous text stays in agent/rules/."""
+    if not isinstance(text, str):
+        raise SessionError("usage", "法则须是文字")
+    if len(text.encode("utf-8")) > 500_000:
+        raise SessionError("usage", "法则太长")
+    agent = path / "agent"
+    agent.mkdir(exist_ok=True)
+    target = agent / "rule.md"
+    if target.is_file() and target.read_text(encoding="utf-8") == text:
+        return {"changed": False, "archived": None}
+    archived = archive_rule(path) if target.is_file() else None
+    target.write_text(text, encoding="utf-8")
+    return {"changed": True, "archived": archived}
+
+
+def rule_state(path, session, version=None):
+    versions = rule_versions(path)
+    target = path / "agent" / "rule.md"
+    if version is not None:
+        found = next((row for row in versions if row.get("version") == version), None)
+        if found is None:
+            raise SessionError("usage", f"没有第 {version} 版")
+        text = (path / "agent" / "rules" / found["file"]).read_text(encoding="utf-8")
+    else:
+        text = target.read_text(encoding="utf-8") if target.is_file() else ""
+    return {"ok": True, "dir": str(path), "rule": session.get("rule"), "text": text,
+            "version": version, "versions": versions}
+
+
+def use_rule(path, session, name):
+    """Switch this game to a registered rule, or none. The previous text is kept."""
+    if name == "none":
+        target = path / "agent" / "rule.md"
+        archived = archive_rule(path) if target.is_file() else None
+        if target.is_file():
+            target.unlink()
+        session.update(rule=None, updated=now())
+        save(path, session)
+        write_brief(path, session)
+        return {"ok": True, "dir": str(path), "rule": None, "archived": archived, "text": "",
+                "versions": rule_versions(path)}
+    record = rule_record(name)
+    written = write_rule_text(path, record["path"].read_text(encoding="utf-8"))
+    session = load(path)
+    session.update(rule=name, updated=now())
+    save(path, session)
+    write_brief(path, session)
+    state = rule_state(path, session)
+    state.update(archived=written["archived"], changed=written["changed"])
+    return state
+
+
+def place_rules(agent, session):
+    """Copy the chosen rule in only when this game does not have one yet.
+    Later edits stay, and the previous text is kept under agent/rules/."""
+    target = agent / "rule.md"
+    name = session.get("rule")
+    if target.is_file() or not name:
+        return
+    shutil.copy2(rule_record(name)["path"], target)
 
 
 def write_brief(path, session):
     lines = [f"# {session['title']}", "", f"游戏局 {session['id']}，{session['created']} 建立。", ""]
     if session.get("guide"):
         lines += [f"攻略：{guide_record(session['guide'])['title']}", ""]
+    if session.get("rule"):
+        lines += [f"法则：{rule_record(session['rule'])['title']}", ""]
     if session.get("request"):
         lines += ["## 用户的要求", "", session["request"], ""]
     if session.get("spec"):
@@ -835,6 +962,7 @@ def cmd_new(args):
     if args.spec is None and not args.request:
         raise SessionError("usage", "new 需要 --spec 或 --request")
     guide = chosen_guide(args.guide)
+    rule = chosen_rule(args.rule)
     spec = read_spec(args.spec) if args.spec is not None else None
     if spec is not None:
         check_spec(spec)
@@ -850,9 +978,11 @@ def cmd_new(args):
     session = {"id": sid, "title": title, "created": now(), "updated": now(), "status": "setup",
                "request": args.request, "spec": spec, "setup": [], "identity": None, "prefix": None,
                "redirected": False, "saves": [], "turn": None, "year": None, "latest_save": None,
-               "segments": 0, "exe_hash": None, "guide": guide}
+               "segments": 0, "exe_hash": None, "guide": guide, "rule": rule}
     save(path, session)
     write_brief(path, session)
+    if rule:
+        shutil.copy2(rule_record(rule)["path"], path / "agent" / "rule.md")
     if spec is None:
         return {"ok": True, "dir": str(path), "id": sid, "status": "setup",
                 "next": f"按用户的要求写 {path / 'spec.json'}，再运行 civ2session.py setup {path}"}
@@ -942,6 +1072,8 @@ def load_latest(path):
 def cmd_resume(args):
     if args.guide:
         chosen_guide(args.guide)
+    if args.rule:
+        chosen_rule(args.rule)
     path = session_dir(args.dir)
     session = load(path)
     if session["status"] in ("setup", "starting", "failed"):
@@ -955,6 +1087,9 @@ def cmd_resume(args):
         session.update(guide=args.guide, updated=now())
         save(path, session)
         write_brief(path, session)
+    if args.rule:
+        use_rule(path, session, args.rule)
+        session = load(path)
     status = call({"op": "hello"}, connect_s=2)
     attached = bool(status.get("ok") and status.get("in_game"))
     if attached and not same_game(session):
@@ -1061,7 +1196,7 @@ def cmd_context(args):
     if PLAYBOOK.is_file():
         shutil.copy2(PLAYBOOK, agent / "playbook.md")
     place_guide(agent, session)
-    place_rules(agent)
+    place_rules(agent, session)
     shutil.copy2(path / "brief.md", agent / "brief.md")
     if not (agent / "notes.md").exists():
         (agent / "notes.md").write_text(NOTES_SEED, encoding="utf-8")
@@ -1120,6 +1255,42 @@ class Parser(argparse.ArgumentParser):
         raise SessionError("usage", message)
 
 
+def cmd_rules(_args):
+    rules = load_rules()
+    return {"ok": True, "rules": [
+        {"name": name, "title": item["title"], "file": item["file"]} for name, item in rules.items()
+    ]}
+
+
+def cmd_rule(args):
+    """Read or replace this game's rule.md. Replacing keeps the previous text."""
+    path = session_dir(args.dir) if args.dir else None
+    if path is None:
+        active = ctl.active_session()
+        if not active:
+            raise SessionError("usage", "没有正在进行的局")
+        path = Path(active["dir"])
+    session = load(path)
+    if args.use:
+        return use_rule(path, session, args.use)
+    if args.file or args.text == "-":
+        text = sys.stdin.read() if args.text == "-" else Path(args.file).read_text(encoding="utf-8")
+        written = write_rule_text(path, text)
+        session = load(path)
+        session["updated"] = now()
+        save(path, session)
+        state = rule_state(path, session)
+        state.update(changed=written["changed"], archived=written["archived"])
+        return state
+    version = None
+    if args.version:
+        try:
+            version = int(args.version)
+        except ValueError:
+            raise SessionError("usage", "版本须是数字")
+    return rule_state(path, session, version)
+
+
 def cmd_guides(_args):
     guides = load_guides()
     return {"ok": True, "guides": [
@@ -1137,6 +1308,7 @@ def build_parser():
     p.add_argument("--title", help="这局的名字")
     p.add_argument("--id", help="目录名里的英文标识，如 romans-king")
     p.add_argument("--guide", help="registry.json 里注册的攻略名，如 jin-yuan；全文写入 guide.md")
+    p.add_argument("--rule", help="注册的法则，默认 basic；none 表示不用法则")
     p.set_defaults(run=cmd_new)
     p = sub.add_parser("setup", help="按目录里的 spec.json 启动游戏并开局")
     p.add_argument("dir")
@@ -1146,9 +1318,19 @@ def build_parser():
     p = sub.add_parser("resume", help="从目录接着玩：启动游戏，读最新的存档，核对是这一局")
     p.add_argument("dir")
     p.add_argument("--guide", help="给这局加上或换上 registry.json 里注册的攻略")
+    p.add_argument("--rule", help="给这局换上注册的法则；none 表示去掉。上一份留在这一局")
     p.set_defaults(run=cmd_resume)
     p = sub.add_parser("guides", help="列出 registry.json 里注册的可选攻略")
     p.set_defaults(run=cmd_guides)
+    p = sub.add_parser("rules", help="列出注册的法则")
+    p.set_defaults(run=cmd_rules)
+    p = sub.add_parser("rule", help="看或改这一局的法则；改之前的一份留在这一局")
+    p.add_argument("dir", nargs="?")
+    p.add_argument("--use", help="换上注册的法则，或 none")
+    p.add_argument("--file", help="用这个文件替换现在的法则")
+    p.add_argument("--text", help="写 - 时从 stdin 读入新的法则")
+    p.add_argument("--version", help="查看归档的第几版")
+    p.set_defaults(run=cmd_rule)
     p = sub.add_parser("close", help="收尾：存盘点，离开并退出游戏，恢复用户的文件，解锁")
     p.add_argument("--status", choices=("paused", "ended"), default="paused")
     p.add_argument("--keep-running", action="store_true", help="不退出游戏（用户的 CIV2.DAT、HALLFAME.DAT 不恢复）")
@@ -1189,7 +1371,7 @@ def main(argv):
         response = fail("cli_fault", f"{type(exc).__name__}: {exc}")
     print(json.dumps(response, ensure_ascii=False))
     folder = folder or (Path(response["dir"]) if response.get("dir") else None)
-    if args is not None and args.cmd not in ("list", "status", "context", "guides") and folder and \
+    if args is not None and args.cmd not in ("list", "status", "context", "guides", "rules", "rule") and folder and \
             (folder / "session.json").is_file():
         try:
             append_jsonl(folder / "log.jsonl", {"time": now(), "command": f"session {args.cmd}", "response": response})

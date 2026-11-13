@@ -6,7 +6,13 @@
 }
 body { margin: 0; }
 header, main { padding: 16px 20px; }
-header { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 1px solid #d9d2c5; }
+header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; border-bottom: 1px solid #d9d2c5; }
+header form { margin: 0; }
+button, input { font: inherit; }
+.play-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+.play-row input { width: 7em; }
+.play-row textarea, #rule-text { width: 100%; box-sizing: border-box; font: inherit; }
+.play-row select { font: inherit; }
 h1 { font-size: 20px; margin: 0; }
 h2, h3 { margin: 0 0 8px; font-size: 16px; }
 h2.next { margin-top: 16px; }

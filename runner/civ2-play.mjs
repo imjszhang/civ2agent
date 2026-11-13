@@ -127,7 +127,7 @@ async function main(argv) {
       target: { type: "string" }, targets: { type: "string" }, turns: { type: "string" },
       "segment-turns": { type: "string" }, "segment-minutes": { type: "string" }, "keep-open": { type: "boolean" },
       spec: { type: "string" }, request: { type: "string" }, title: { type: "string" }, guide: { type: "string" },
-      python: { type: "string" }, help: { type: "boolean" },
+      rule: { type: "string" }, python: { type: "string" }, help: { type: "boolean" },
     },
   });
   const int = v => (v === undefined ? undefined : Number.parseInt(v, 10));
@@ -152,6 +152,7 @@ async function main(argv) {
     if (values.request) args.push("--request", values.request);
     if (values.title) args.push("--title", values.title);
     if (values.guide) args.push("--guide", values.guide);
+    if (values.rule) args.push("--rule", values.rule);
     const created = session(...args);
     // A start dialog the spec did not cover: the agent answers it in the first segment.
     if (!created.ok && !(created.dir && created.status === "failed")) return created;
@@ -163,6 +164,7 @@ async function main(argv) {
     const dir = path.resolve(dirArg);
     const resumeArgs = ["resume", dir];
     if (values.guide) resumeArgs.push("--guide", values.guide);
+    if (values.rule) resumeArgs.push("--rule", values.rule);
     const resumed = session(...resumeArgs);
     if (!resumed.ok) return resumed;
     return playSession(dir, controller.signal);

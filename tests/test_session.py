@@ -284,11 +284,11 @@ class Lifecycle(unittest.TestCase):
         self.assertFalse((folder / "agent" / "guide.md").exists())
         self.assertEqual(strategy.read_text(encoding="utf-8"), "上次的打法\n")
         rules = (folder / "agent" / "rule.md").read_text(encoding="utf-8")
-        self.assertIn("## 同陆好战", rules)
+        self.assertIn("先看局面再下令", rules)
         (folder / "agent" / "rule.md").write_text("改过\n", encoding="utf-8")
         code, out = run(["context", str(folder), "--goal", "再来"])
         self.assertEqual(code, 0)
-        self.assertIn("## 同陆好战", (folder / "agent" / "rule.md").read_text(encoding="utf-8"))
+        self.assertEqual((folder / "agent" / "rule.md").read_text(encoding="utf-8"), "改过\n")
         self.assertIsNone(json.loads((folder / "session.json").read_text(encoding="utf-8")).get("guide"))
 
     def test_context_copies_the_whole_guide_and_does_not_write_strategy(self):
@@ -320,13 +320,9 @@ class Lifecycle(unittest.TestCase):
     def test_guides_are_the_registry_and_only_those_files(self):
         code, out = run(["guides"])
         self.assertEqual(code, 0)
-        self.assertEqual([(g["name"], g["title"], g["file"]) for g in out["guides"]], [
-            ("jin-yuan", "金元帝国", "jin-yuan.md"),
-            ("jin-yuan-rush", "金元帝国·神级快攻", "jin-yuan-rush.md"),
-        ])
-        folder = session.GUIDE_REGISTRY.parent
-        self.assertEqual(sorted(p.name for p in folder.iterdir()),
-                         ["jin-yuan-rush.md", "jin-yuan.md", "registry.json"])
+        self.assertEqual(out["guides"][0]["name"], "jin-yuan")
+        self.assertTrue((session.GUIDE_REGISTRY.parent / "jin-yuan.md").is_file())
+        self.assertTrue((session.GUIDE_REGISTRY.parent / "registry.example.json").is_file())
         regdir = Path(self.tmp.name) / "guides"
         regdir.mkdir()
         (regdir / "one.md").write_text("一份全文\n", encoding="utf-8")
@@ -340,6 +336,31 @@ class Lifecycle(unittest.TestCase):
         with self.assertRaises(session.SessionError) as caught:
             session.load_guides(regdir / "outside.json")
         self.assertIn("同一目录", caught.exception.response["reason"])
+
+    def test_replacing_a_rule_keeps_the_previous_text_in_the_game(self):
+        code, out = run(["new", "--request", "看法则", "--id", "rule versions", "--rule", "none"])
+        self.assertEqual(code, 0)
+        folder = Path(out["dir"])
+        self.assertFalse((folder / "agent" / "rule.md").exists())
+        first = folder / "first.md"
+        first.write_text("第一版法则\n", encoding="utf-8")
+        code, out = run(["rule", str(folder), "--file", str(first)])
+        self.assertEqual(code, 0)
+        self.assertTrue(out["changed"])
+        self.assertIsNone(out["archived"])
+        second = folder / "second.md"
+        second.write_text("第二版法则\n", encoding="utf-8")
+        code, out = run(["rule", str(folder), "--file", str(second)])
+        self.assertEqual(out["archived"]["file"], "v0001.md")
+        self.assertEqual((folder / "agent" / "rules" / "v0001.md").read_text(encoding="utf-8"), "第一版法则\n")
+        self.assertEqual((folder / "agent" / "rule.md").read_text(encoding="utf-8"), "第二版法则\n")
+        code, out = run(["rule", str(folder), "--version", "1"])
+        self.assertEqual(out["text"], "第一版法则\n")
+        code, out = run(["context", str(folder), "--goal", "接着"])
+        self.assertEqual((folder / "agent" / "rule.md").read_text(encoding="utf-8"), "第二版法则\n")
+        code, out = run(["rule", str(folder), "--use", "basic"])
+        self.assertIn("先看局面再下令", out["text"])
+        self.assertEqual((folder / "agent" / "rules" / "v0002.md").read_text(encoding="utf-8"), "第二版法则\n")
 
     def test_checkpoint_archives_the_strategy_once_per_turn(self):
         folder = Path(self.tmp.name) / "archive"

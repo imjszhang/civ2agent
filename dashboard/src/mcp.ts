@@ -33,9 +33,40 @@ export function bindAllowed(host: string, token: string): boolean {
 export function bearerOk(authorization: string | undefined, token: string): boolean {
   if (!token) return true;
   const given = authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : "";
+  return secretOk(given, token);
+}
+
+export const PAGE_COOKIE = "civ2agent";
+export const LEASE_COOKIE = "civ2agent_lease";
+
+export function cookieValue(header: string | undefined, name: string): string {
+  if (!header) return "";
+  for (const part of header.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq < 0) continue;
+    if (part.slice(0, eq).trim() !== name) continue;
+    try { return decodeURIComponent(part.slice(eq + 1).trim()); }
+    catch { return ""; }
+  }
+  return "";
+}
+
+function secretOk(given: string, token: string): boolean {
   const left = Buffer.from(given);
   const right = Buffer.from(token);
   return left.length === right.length && timingSafeEqual(left, right);
+}
+
+/** A page, event stream or /play call. Bearer or the login cookie. No token means loopback. */
+export function pageAllowed(authorization: string | undefined, cookie: string | undefined, token: string): boolean {
+  if (!token) return true;
+  return bearerOk(authorization, token) || secretOk(cookieValue(cookie, PAGE_COOKIE), token);
+}
+
+export function setCookie(name: string, value: string): string {
+  const body = value ? `${name}=${encodeURIComponent(value)}` : `${name}=`;
+  const maxAge = value ? "" : "; Max-Age=0";
+  return `${body}; HttpOnly; SameSite=Lax; Path=/${maxAge}`;
 }
 
 function asTool(value: CliResult) {
@@ -93,7 +124,10 @@ function leaseOf(args: Record<string, unknown>): string {
 
 export function createMcpServer(deps: McpDeps): McpServer {
   const mcp = new McpServer({ name: "civ2agent", version: "1" });
-  const env = () => sessionEnv(deps.gamesDir);
+  const leaseNow = () => deps.gate.leaseId();
+  const env = () => sessionEnv(deps.gamesDir, leaseNow());
+  const session = (args: string[], ms: number) =>
+    runSession(deps.python, deps.session, deps.gamesDir, args, ms, leaseNow());
 
   const mutate = (command: string, lease: string, run: () => Promise<CliResult>) =>
     runMutation(deps.gate, command, lease, run, deps.onActivity);
@@ -119,7 +153,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
   mcp.registerTool("list_games", {
     description: "列出 games 目录里的全部游戏局。",
     inputSchema: {},
-  }, async () => asTool(await runSession(deps.python, deps.session, deps.gamesDir, ["list"], 8000)));
+  }, async () => asTool(await session(["list"], 8000)));
 
   mcp.registerTool("game_status", {
     description: "一局的状态。不给 id 时是进行中的那局。",
@@ -133,7 +167,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
     }
     return whenIdle(
       deps.gate,
-      () => runSession(deps.python, deps.session, deps.gamesDir, argv, 8000).then(asTool),
+      () => session(argv, 8000).then(asTool),
       reason => asTool({ ok: false, error: "busy", reason, game: gameBrief(deps.readSnapshot(), reason) }),
     );
   });
@@ -159,7 +193,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
     }
     const result = await mutate("start_game", args.lease, async () => {
       await notify(extra, "正在开局");
-      return runSession(deps.python, deps.session, deps.gamesDir, startArgs(args.spec, args.title, args.request, args.id), SESSION_MS);
+      return session(startArgs(args.spec, args.title, args.request, args.id), SESSION_MS);
     });
     return asTool(result);
   });
@@ -173,13 +207,13 @@ export function createMcpServer(deps: McpDeps): McpServer {
   }, async args => {
     const found = openGame(deps.gamesDir, args.id);
     if (found.ok !== true) return asTool(found);
-    return asTool(await mutate("resume_game", args.lease, () => runSession(deps.python, deps.session, deps.gamesDir, ["resume", found.dir], SESSION_MS)));
+    return asTool(await mutate("resume_game", args.lease, () => session(["resume", found.dir], SESSION_MS)));
   });
 
   mcp.registerTool("checkpoint", {
     description: "存盘点：存这一回合、记一行。回合开始、没有对话框也没有城市窗口时调用，每回合一次。",
     inputSchema: { lease: z.string().describe("claim 返回的租约") },
-  }, async args => asTool(await mutate("checkpoint", args.lease, () => runSession(deps.python, deps.session, deps.gamesDir, ["checkpoint"], CHECKPOINT_MS))));
+  }, async args => asTool(await mutate("checkpoint", args.lease, () => session(["checkpoint"], CHECKPOINT_MS))));
 
   mcp.registerTool("close_game", {
     description: "收尾：存盘点，离开并退出游戏，恢复用户的文件，解锁。status 为 paused 或 ended。",
@@ -188,8 +222,8 @@ export function createMcpServer(deps: McpDeps): McpServer {
       status: z.enum(["paused", "ended"]).optional().describe("paused 暂停，ended 这局已经结束"),
       keep_running: z.boolean().optional().describe("不退出游戏（用户的 CIV2.DAT、HALLFAME.DAT 不恢复）"),
     },
-  }, async args => asTool(await mutate("close_game", args.lease, () => runSession(
-    deps.python, deps.session, deps.gamesDir, closeArgs(args.status ?? "paused", args.keep_running === true), SESSION_MS,
+  }, async args => asTool(await mutate("close_game", args.lease, () => session(
+    closeArgs(args.status ?? "paused", args.keep_running === true), SESSION_MS,
   ))));
 
   for (const tool of visiblePlayTools(deps.playTools)) {

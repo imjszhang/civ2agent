@@ -168,7 +168,7 @@ node civ2-play.mjs resume ..\games\<id> --guide jin-yuan --turns 30
 
 A stretch plays `--segment-turns` turns (default 5) and stops after `--segment-minutes` (default 60). The run stops after `--turns` (default 10), when a stretch fails, or when the turn did not advance. Ctrl+C closes the match. `--keep-open` leaves the game and the lock in place.
 
-With `--request` and no spec, the first stretch writes `spec.json` and runs `setup`, then plays. Each turn the agent rewrites `strategy.md` (long, middle, and short goals, each with a turn number) and checks it against `rule.md` before giving orders. `rule.md` is copied from `runner/rule.md` and is not for the agent to edit.
+With `--request` and no spec, the first stretch writes `spec.json` and runs `setup`, then plays. Each turn the agent rewrites `strategy.md` and checks it against this game's `rule.md` before giving orders. A new game starts from the selected rule, `basic` unless `--rule` names another. The person can edit that file from the dashboard; the previous text stays in the game's `agent/rules/`. The agent does not edit it. `--rule none` skips the file.
 
 `--python` or `CIV2AGENT_PYTHON` selects the Python that runs the command lines.
 
@@ -185,7 +185,7 @@ A guide is a Markdown file next to `runner/guides/registry.json`. Register it th
 }
 ```
 
-`civ2session.py guides` lists the registry. `--guide <name>` on `new` or `resume` copies the whole file to `agent/guide.md` at the start of a stretch. An unknown name is refused before a folder is created or a save is loaded. Omit `--guide` and there is no `guide.md`. The two files shipped here are the Jin-Yuan essay and the deity rush playbook. Add another by dropping one `.md` in that directory and adding one entry. Do not put other essays or `.docx` files there.
+`runner/rules/basic.md` is the only rule text in git. Copy `registry.example.json` to `registry.json` and add other markdown files beside it; those stay on this machine. The same is true of guides: `runner/guides/*.md` and `registry.json` are local. The example registry shows the shape.
 
 ## Dashboard and MCP
 
@@ -197,13 +197,13 @@ npm ci
 npm start
 ```
 
-The page is `http://127.0.0.1:4732`. MCP is `http://127.0.0.1:4732/mcp`. Set `DASHBOARD_PORT` to change the port. The default bind is `127.0.0.1`, and a local client needs no token. To listen on the LAN, set `DASHBOARD_HOST=0.0.0.0` and `DASHBOARD_TOKEN`. Without a token the process refuses to bind beyond loopback. Send `Authorization: Bearer <token>`. Open the port in the firewall yourself.
+The page is `http://127.0.0.1:4732`. MCP is `http://127.0.0.1:4732/mcp`. Set `DASHBOARD_PORT` to change the port. The default bind is `127.0.0.1`, and a local client needs no token. To listen on the LAN, set `DASHBOARD_HOST=0.0.0.0` and `DASHBOARD_TOKEN`. Without a token the process refuses to bind beyond loopback. Startup then prints each LAN address. Allow that port in Windows Firewall yourself; the program does not add a rule.
 
-One match and one mutating call at a time. `claim` (with a `client` name shown on the page) returns a `lease`. Start, resume, checkpoint, close, and play commands carry that lease. `release` gives it back. The lease drops after 10 idle minutes (`GATE_LEASE_IDLE_MS`). A second mutation returns `busy` immediately and does not queue.
+MCP still wants `Authorization: Bearer <token>`. The page and `/events` do not accept that header from a browser, so open `/login` and post the same token. The session cookie is `HttpOnly`. `/logout` clears it. The page's main controls start games: a request, an optional guide, how many games (1–20), and how many turns each game lasts (1–500). It runs `civ2-play.mjs` that many times on the computer that has the game. "接着玩这一局" continues the match already open. Stop ends that run and gives the lease back. Step-by-step controls (answer a dialog, end the turn, checkpoint, move, production, tax) stay folded away. A dialog whose `via` is `mouse` still moves the mouse on the computer that runs the game. Leave that game window on its screen.
+
+One match and one mutating call at a time. `claim` (with a `client` name shown on the page) returns a `lease`. Start, resume, checkpoint, close, and play commands carry that lease. `release` gives it back. The lease drops after 10 idle minutes (`GATE_LEASE_IDLE_MS`). A second mutation returns `busy` immediately and does not queue. While the lease is held, `games/.lease` records the dashboard process. `civ2ctl.py` and `civ2session.py` return `busy` for any pipe call unless `CIV2AGENT_LEASE` is that lease, so the local runner yields the pipe. A dead process id does not keep the lock.
 
 `list_games`, `game_status`, and `read_game` need no lease. `status`, `state`, and `dialog` need no lease either; while the lock is held they return `busy` and the last snapshot instead of sending another command. Play commands such as `respond` and `move` need the lease. `save-game`, `load-game`, and `quit-game` are not on the gateway; use `checkpoint`, `resume_game`, and `close_game`.
-
-While the gateway is running, agents on this machine should use `/mcp` too. A direct `civ2ctl.py` call writes the same pipe.
 
 ## Tests
 
@@ -224,6 +224,7 @@ cd dashboard && npm test
 | `CIV2AGENT_GAME` | Directory that contains `civ2.exe`. Wins over `game.json`. |
 | `CIV2AGENT_GAMES_DIR` | Where match folders live. Default `games/`. |
 | `CIV2AGENT_PYTHON` | Python used by the runner and the dashboard. |
+| `CIV2AGENT_LEASE` | Set by the dashboard on its own commands so they may use the pipe while `games/.lease` is held. |
 | `DASHBOARD_HOST` | Bind address. Default `127.0.0.1`. |
 | `DASHBOARD_PORT` | Default `4732`. |
 | `DASHBOARD_TOKEN` | Required when the bind is not loopback. |

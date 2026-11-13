@@ -139,10 +139,60 @@ def log_session(name, req, response):
         pass  # the log must not change the command's outcome
 
 
+def pid_alive(pid):
+    """True when this process is still running. Windows keeps a process id
+    queryable after it has exited, until the last handle closes, so an exit
+    code other than STILL_ACTIVE counts as dead."""
+    if type(pid) is not int or pid <= 0:
+        return False
+    if sys.platform != "win32":
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    handle = kernel.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return False
+    code = wintypes.DWORD()
+    ok = kernel.GetExitCodeProcess(handle, ctypes.byref(code))
+    kernel.CloseHandle(handle)
+    return bool(ok) and code.value == 259  # STILL_ACTIVE
+
+
+def lease_block():
+    """The dashboard's lease file. A live holder blocks every pipe call unless
+    CIV2AGENT_LEASE is that lease. Reads and writes both wait, so they cannot
+    interleave on the pipe."""
+    try:
+        record = json.loads((games_dir() / ".lease").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(record, dict) or not pid_alive(record.get("pid")):
+        return None
+    lease = record.get("lease")
+    if isinstance(lease, str) and lease and os.environ.get("CIV2AGENT_LEASE") == lease:
+        return None
+    client = record.get("client") if isinstance(record.get("client"), str) and record.get("client") else "别人"
+    return fail("busy", f"租约在 {client} 手里")
+
+
 def transact(payload, connect_s=10.0):
     """Send one request and return the parsed response. Only opening the pipe
     is retried; once a request is written it is never sent again, because the
     game may already be acting on it. The DLL bounds how long it takes."""
+    blocked = lease_block()
+    if blocked:
+        return blocked
     data = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
     deadline = time.time() + connect_s
     while True:

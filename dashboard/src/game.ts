@@ -8,8 +8,10 @@ const EMPTY: GameView = {
   activeUnit: null, moveUnit: null, notice: null,
 };
 
-function call(python: string, ctl: string, args: string[], timeoutMs: number): Promise<Record<string, unknown>> {
-  return runCli(python, ctl, ["--timeout", "2", ...args], timeoutMs);
+function call(
+  python: string, ctl: string, args: string[], timeoutMs: number, env?: NodeJS.ProcessEnv,
+): Promise<Record<string, unknown>> {
+  return runCli(python, ctl, ["--timeout", "2", ...args], timeoutMs, env);
 }
 
 function asList<T>(value: unknown): T[] {
@@ -17,14 +19,16 @@ function asList<T>(value: unknown): T[] {
 }
 
 /** One read-only look at the game. A busy pipe keeps the previous picture and sets busy. */
-export async function readGame(python: string, ctl: string, previous: GameView | null): Promise<GameView> {
-  const status = await call(python, ctl, ["status"], 4000);
+export async function readGame(
+  python: string, ctl: string, previous: GameView | null, env?: NodeJS.ProcessEnv,
+): Promise<GameView> {
+  const status = await call(python, ctl, ["status"], 4000, env);
   if (status.ok !== true) {
     const unreachable = status.error === "not_connected" || status.error === "timeout";
     if (unreachable && previous?.connected) return { ...previous, busy: true, reason: String(status.reason ?? "游戏正忙") };
     return { ...EMPTY, reason: String(status.reason ?? EMPTY.reason) };
   }
-  const state = await call(python, ctl, ["state", "--only", "civ,cities,units,foreign_units,foreign_cities,tiles,diplomacy,city_window,tax_window,notice,dialog"], 12000);
+  const state = await call(python, ctl, ["state", "--only", "civ,cities,units,foreign_units,foreign_cities,tiles,diplomacy,city_window,tax_window,notice,dialog"], 12000, env);
   if (state.ok !== true) {
     return {
       ...EMPTY, connected: true, busy: true, inGame: status.in_game === true,

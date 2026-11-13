@@ -168,7 +168,7 @@ node civ2-play.mjs resume ..\games\<id> --guide jin-yuan --turns 30
 
 一段默认玩 `--segment-turns` 个回合（默认 5），最长 `--segment-minutes` 分钟（默认 60）。玩满 `--turns`（默认 10）、某一段失败，或回合没有往前走，就停下。Ctrl+C 会收尾。`--keep-open` 留下游戏和锁。
 
-只有 `--request`、没有 spec 时，第一段先写 `spec.json` 并 `setup`，再接着玩。每一回合 agent 重写 `strategy.md`（长期、中期、短期目标，各写明做到第几回合），按 `rule.md` 核对通过后才下令。`rule.md` 从 `runner/rule.md` 抄入，agent 不改它。
+只有 `--request`、没有 spec 时，第一段先写 `spec.json` 并 `setup`，再接着玩。每一回合 agent 重写 `strategy.md`，再按这一局的 `rule.md` 核对后才下令。新局默认用法则 `basic`，`--rule` 可以换一套，`--rule none` 不用。人在观察页里改这一局的法则，上一份留在该局的 `agent/rules/`。agent 不改它。
 
 `--python` 或 `CIV2AGENT_PYTHON` 指定跑命令行的 Python。
 
@@ -185,7 +185,7 @@ node civ2-play.mjs resume ..\games\<id> --guide jin-yuan --turns 30
 }
 ```
 
-`civ2session.py guides` 列出注册表。`new` 或 `resume` 的 `--guide <名字>` 会在一段开始时把全文抄进 `agent/guide.md`。未知名字在建目录或读档之前就拒绝。不写 `--guide` 就没有 `guide.md`。现在带上的两份是金元帝国原文，和神级快攻操作手册。再加一份：把一个 `.md` 放进这个目录，并加一条登记。不要把别的文章或 `.docx` 放进来。
+仓库里只提交 `runner/rules/basic.md` 这一份最基本的法则。把 `registry.example.json` 复制成 `registry.json`，再把别的 md 放在旁边，这些都留在本机，不进 git。攻略也一样：`runner/guides/*.md` 和 `registry.json` 只在本机。示例注册表只说明格式。
 
 ## 观察页和 MCP
 
@@ -197,13 +197,13 @@ npm ci
 npm start
 ```
 
-页面是 `http://127.0.0.1:4732`。MCP 是 `http://127.0.0.1:4732/mcp`。端口用 `DASHBOARD_PORT` 改。默认只听 `127.0.0.1`，本机客户端不用令牌。要对局域网开放，设置 `DASHBOARD_HOST=0.0.0.0` 和 `DASHBOARD_TOKEN`。没有令牌时，进程拒绝绑到回环以外的地址。请求带 `Authorization: Bearer <令牌>`。防火墙要自己放行。
+页面是 `http://127.0.0.1:4732`。MCP 是 `http://127.0.0.1:4732/mcp`。端口用 `DASHBOARD_PORT` 改。默认只听 `127.0.0.1`，本机客户端不用令牌。要对局域网开放，设置 `DASHBOARD_HOST=0.0.0.0` 和 `DASHBOARD_TOKEN`。没有令牌时，进程拒绝绑到回环以外的地址。启动后会打出每个局域网地址。Windows 防火墙要自己放行这个端口，程序不会写规则。
 
-同一时刻只有一局、一次会改局面的调用。`claim`（`client` 是显示在观察页上的名字）返回 `lease`。开局、续玩、存盘、收尾和代打都带上它。`release` 交回。空闲 10 分钟后租约放开（`GATE_LEASE_IDLE_MS`）。第二条改动立刻返回 `busy`，不排队。
+MCP 仍然要 `Authorization: Bearer <令牌>`。页面和 `/events` 用浏览器带不上这个头，所以打开 `/login`，提交同一个令牌。会话 cookie 是 `HttpOnly`。`/logout` 清掉它。页面的主操作是开局：写下怎么开、可选攻略、局数（1 到 20）和每局回合（1 到 500），然后「开局并玩」。它在跑游戏的电脑上按这个次数启动 `civ2-play.mjs`，一局结束再开下一局。正在进行的局用「接着玩这一局」。停下会结束这次安排并交回租约。回答对话框、结束回合、存盘、走一步、改产、设定税率收在「单步操作」里。`via` 为 `mouse` 的对话框仍会移动跑游戏那台电脑的鼠标，游戏窗口留在那块屏幕上。
+
+同一时刻只有一局、一次会改局面的调用。`claim`（`client` 是显示在观察页上的名字）返回 `lease`。开局、续玩、存盘、收尾和代打都带上它。`release` 交回。空闲 10 分钟后租约放开（`GATE_LEASE_IDLE_MS`）。第二条改动立刻返回 `busy`，不排队。租约在手里时，`games/.lease` 记下观察页进程。`civ2ctl.py` 和 `civ2session.py` 在碰管道之前，除非环境变量 `CIV2AGENT_LEASE` 就是这张租约，否则返回 `busy`。本机 runner 因此把管道让出来。进程已经不在时，这把锁不作数。
 
 `list_games`、`game_status`、`read_game` 不需要租约。`status`、`state`、`dialog` 也不需要；锁被占用时它们返回 `busy` 和上一份快照，不再发命令。`respond`、`move` 这类代打需要租约。网关上没有 `save-game`、`load-game`、`quit-game`，用 `checkpoint`、`resume_game`、`close_game`。
-
-网关开着时，本机上的 agent 也走 `/mcp`。再直接调 `civ2ctl.py` 会和它写同一条管道。
 
 ## 测试
 
@@ -224,6 +224,7 @@ cd dashboard && npm test
 | `CIV2AGENT_GAME` | 含有 `civ2.exe` 的目录。优先于 `game.json`。 |
 | `CIV2AGENT_GAMES_DIR` | 各局目录放在哪里。默认 `games/`。 |
 | `CIV2AGENT_PYTHON` | runner 和观察页用来跑命令行的 Python。 |
+| `CIV2AGENT_LEASE` | 观察页给自己拉起的命令带上，这样 `games/.lease` 还在时它们仍能用管道。 |
 | `DASHBOARD_HOST` | 监听地址。默认 `127.0.0.1`。 |
 | `DASHBOARD_PORT` | 默认 `4732`。 |
 | `DASHBOARD_TOKEN` | 监听地址不是回环时必须设置。 |

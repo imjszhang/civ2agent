@@ -13,3 +13,9 @@ dashboard/node_modules/
 runner/targets.json
 # Civ2 install: local path to civ2.exe (copy game.example.json)
 game.json
+# Local guides and extra rules. basic.md and the example registries stay in git.
+runner/guides/*.md
+runner/guides/registry.json
+runner/rules/registry.json
+runner/rules/*.md
+!runner/rules/basic.md

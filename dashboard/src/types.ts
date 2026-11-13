@@ -167,6 +167,8 @@ export type GatewayView = {
   command: string | null;
   since: string | null;
   last: GatewayLast | null;
+  /** A background run of whole games, such as "正在玩第 1/3 局". */
+  playing: string | null;
 };
 
 export type Snapshot = {

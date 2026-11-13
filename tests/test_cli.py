@@ -9,6 +9,8 @@ import importlib.util
 import io
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -287,6 +289,47 @@ class GameRoot(unittest.TestCase):
             with self.assertRaises(civ2ctl.GamePathError) as caught:
                 civ2ctl.game_root()
             self.assertIn("game.json", str(caught.exception))
+
+
+class Lease(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.old_dir = os.environ.get("CIV2AGENT_GAMES_DIR")
+        self.old_lease = os.environ.get("CIV2AGENT_LEASE")
+        os.environ["CIV2AGENT_GAMES_DIR"] = self.tmp.name
+        os.environ.pop("CIV2AGENT_LEASE", None)
+
+    def tearDown(self):
+        if self.old_dir is None:
+            os.environ.pop("CIV2AGENT_GAMES_DIR", None)
+        else:
+            os.environ["CIV2AGENT_GAMES_DIR"] = self.old_dir
+        if self.old_lease is None:
+            os.environ.pop("CIV2AGENT_LEASE", None)
+        else:
+            os.environ["CIV2AGENT_LEASE"] = self.old_lease
+        self.tmp.cleanup()
+
+    def write(self, pid, lease="held"):
+        Path(self.tmp.name, ".lease").write_text(
+            json.dumps({"pid": pid, "lease": lease, "client": "甲"}), encoding="utf-8")
+
+    def test_a_live_lease_blocks_until_the_same_lease_or_a_dead_pid(self):
+        self.write(os.getpid())
+        code, out = run_cli(["status", "--timeout", "0.2"])
+        self.assertEqual((code, out[0]["error"]), (1, "busy"))
+        self.assertIn("甲", out[0]["reason"])
+        code, out = run_cli(["tools"])
+        self.assertEqual(code, 0)
+        os.environ["CIV2AGENT_LEASE"] = "held"
+        code, out = run_cli(["status", "--timeout", "0.2"])
+        self.assertEqual(out[0]["error"], "not_connected")
+        os.environ.pop("CIV2AGENT_LEASE", None)
+        finished = subprocess.Popen([sys.executable, "-c", "pass"])
+        finished.wait()
+        self.write(finished.pid)
+        code, out = run_cli(["status", "--timeout", "0.2"])
+        self.assertEqual(out[0]["error"], "not_connected")
 
 
 if __name__ == "__main__":

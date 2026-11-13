@@ -6,6 +6,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { runCli } from "../src/cli.js";
 import { Gate, runMutation, whenIdle } from "../src/gate.js";
+import { listenLines } from "../src/lan.js";
 import { bindAllowed } from "../src/mcp.js";
 import { inputShape } from "../src/mcp.js";
 import { needsLease, toolDescription, visiblePlayTools, type CtlTool } from "../src/play.js";
@@ -124,6 +125,13 @@ test("a timed out command is killed", async () => {
   }
 });
 
+test("a wildcard bind lists LAN addresses and never the token", () => {
+  const lines = listenLines("0.0.0.0", 4732);
+  assert.ok(lines[0]?.includes("http://127.0.0.1:4732/mcp"));
+  for (const line of lines) assert.equal(line.includes("secret"), false);
+  assert.deepEqual(listenLines("127.0.0.1", 9), ["civ2agent dashboard http://127.0.0.1:9  mcp http://127.0.0.1:9/mcp"]);
+});
+
 test("a LAN bind without a token is refused", async () => {
   assert.equal(bindAllowed("127.0.0.1", ""), true);
   assert.equal(bindAllowed("0.0.0.0", ""), false);
@@ -166,6 +174,90 @@ if (args[0] === "tools") {
   }
 });
 
+test("a token guards the page and the event stream, and play needs a lease", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "civ2-page-"));
+  const script = path.join(dir, "fake.mjs");
+  await writeFile(script, `const args = process.argv.slice(2);
+if (args[0] === "tools") console.log(JSON.stringify({ ok: true, tools: [] }));
+else console.log(JSON.stringify({ ok: true, args }));
+`);
+  const locked = await startDashboard(options("127.0.0.1", "secret", script, dir));
+  try {
+    const page = await fetch(`${locked.url}/`, { redirect: "manual" });
+    assert.equal(page.status, 302);
+    assert.equal(page.headers.get("location"), "/login");
+    const events = await fetch(`${locked.url}/events`);
+    assert.equal(events.status, 401);
+    await events.body?.cancel();
+    const login = await fetch(`${locked.url}/login`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "token=secret",
+      redirect: "manual",
+    });
+    assert.equal(login.status, 302);
+    const pageCookie = pair(login, "civ2agent");
+    assert.ok(pageCookie.startsWith("civ2agent="));
+    const mcp = await post(locked.url, { cookie: pageCookie }, initialize());
+    assert.equal(mcp.status, 401);
+    const openEvents = await fetch(`${locked.url}/events`, { headers: { cookie: pageCookie } });
+    assert.equal(openEvents.status, 200);
+    await openEvents.body?.cancel();
+    const bare = await play(locked.url, pageCookie, { op: "act", tool: "end-turn", args: {} });
+    assert.equal(bare.ok, false);
+    const claimed = await play(locked.url, pageCookie, { op: "claim", client: "观察页" });
+    assert.equal(claimed.ok, true);
+    assert.equal(typeof claimed.lease, "string");
+    let acted: { ok?: boolean; reason?: string } = {};
+    for (let i = 0; i < 20 && acted.ok !== true; i++) {
+      acted = await play(locked.url, pageCookie, { op: "act", lease: claimed.lease, tool: "end-turn", args: {} });
+      if (acted.reason !== "正在读取局面") break;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    assert.equal(acted.ok, true, JSON.stringify(acted));
+  } finally {
+    await locked.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("run plays the requested number of games and refuses an empty request", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "civ2-run-"));
+  const script = path.join(dir, "fake.mjs");
+  const runner = path.join(dir, "play.mjs");
+  const log = path.join(dir, "runs.txt");
+  await writeFile(script, `if (process.argv[2] === "tools") console.log(JSON.stringify({ ok: true, tools: [] }));
+else console.log(JSON.stringify({ ok: true }));
+`);
+  await writeFile(runner, `import { appendFileSync } from "node:fs";
+if (!process.env.CIV2AGENT_LEASE) process.exit(2);
+appendFileSync(process.env.RUN_LOG, process.argv.slice(2).join(" ") + "\\n");
+`);
+  const locked = await startDashboard({ ...options("127.0.0.1", "", script, dir), runner });
+  const previous = process.env.RUN_LOG;
+  process.env.RUN_LOG = log;
+  try {
+    const missing = await play(locked.url, "", { op: "run" });
+    assert.equal(missing.ok, false);
+    const started = await play(locked.url, "", { op: "run", request: "罗马人，国王", games: 2, turns: 3, guide: "jin-yuan" });
+    assert.equal(started.ok, true, JSON.stringify(started));
+    let text = "";
+    for (let i = 0; i < 50 && text.trim().split(/\n/u).length < 2; i += 1) {
+      try { text = await (await import("node:fs/promises")).readFile(log, "utf8"); } catch { /* not written yet */ }
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    const lines = text.trim().split(/\n/u);
+    assert.equal(lines.length, 2, text);
+    assert.match(lines[0] ?? "", /new --request 罗马人，国王 --turns 3 --title 第 1 局 --guide jin-yuan/u);
+    assert.match(lines[1] ?? "", /第 2 局/u);
+  } finally {
+    if (previous === undefined) delete process.env.RUN_LOG;
+    else process.env.RUN_LOG = previous;
+    await locked.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 function options(host: string, token: string, script: string, gamesDir: string): DashboardOptions {
   return {
     host, port: 0, token, python: process.execPath, ctl: script, session: script,
@@ -179,6 +271,21 @@ function initialize() {
     jsonrpc: "2.0", id: 1, method: "initialize",
     params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "test", version: "0" } },
   };
+}
+
+function pair(response: Response, name: string): string {
+  const all = typeof response.headers.getSetCookie === "function" ? response.headers.getSetCookie() : [];
+  const found = all.find(item => item.startsWith(`${name}=`));
+  return found ? (found.split(";")[0] ?? "") : "";
+}
+
+async function play(url: string, cookie: string, body: unknown) {
+  const response = await fetch(`${url}/play`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie },
+    body: JSON.stringify(body),
+  });
+  return response.json() as Promise<{ ok?: boolean; lease?: unknown; reason?: string }>;
 }
 
 async function post(url: string, headers: Record<string, string>, body: unknown) {

@@ -1,4 +1,7 @@
 const link = document.querySelector("#link");
+const playHold = document.querySelector("#play-hold");
+const playNote = document.querySelector("#play-note");
+const playDialog = document.querySelector("#play-dialog");
 const gateway = document.querySelector("#gateway");
 const game = document.querySelector("#game");
 const mapCanvas = document.querySelector("#map-canvas");
@@ -10,6 +13,8 @@ const actions = document.querySelector("#actions");
 const commands = document.querySelector("#commands");
 
 const state = { game: null, gateway: null, session: null, run: null, earlier: null, prompt: "", thoughts: [], actions: [], commands: [] };
+let holding = false;
+let dialogKey = "";
 
 const KEEP_COMMANDS = 80;
 const KEEP_ACTIONS = 80;
@@ -55,11 +60,13 @@ function renderGateway() {
     view.lan ? "局域网已开放" : "仅本机",
     view.holder ? `持有者 ${view.holder}` : "无人持有租约",
   ];
-  if (view.command) lines.push(`远程操作进行中：${view.command}${view.since ? "　自 " + view.since.slice(11, 19) : ""}`);
-  else lines.push("空闲");
+    if (view.playing) lines.push(view.playing);
+    if (view.command) lines.push(`远程操作进行中：${view.command}${view.since ? "　自 " + view.since.slice(11, 19) : ""}`);
+    else if (!view.playing) lines.push("空闲");
   if (view.last) lines.push(`最近 ${view.last.command}${view.last.ok ? " 完成" : "　" + (view.last.reason || "失败")}`);
   for (const text of lines) {
     const line = document.createElement("p");
+    if (view.playing && text === view.playing) line.className = "busy";
     if (view.command && text.startsWith("远程操作进行中")) line.className = "busy";
     line.textContent = text;
     gateway.append(line);
@@ -502,10 +509,185 @@ function renderCommands() {
   commands.scrollTop = commands.scrollHeight;
 }
 
+function numberField(form, name) {
+  const value = Number(new FormData(form).get(name));
+  return Number.isInteger(value) ? value : null;
+}
+
+function renderHold() {
+  playHold.textContent = holding ? "本页持有操作权" : "还没有操作权";
+}
+
+function renderPlayDialog() {
+  const options = state.game?.dialog?.options || [];
+  const key = JSON.stringify(options.map(option => [option.index, option.text, option.disabled]));
+  if (key === dialogKey) return;
+  dialogKey = key;
+  playDialog.replaceChildren();
+  for (const option of options) {
+    if (option.disabled) continue;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = option.text || String(option.index);
+    button.addEventListener("click", () => {
+      const args = option.text ? { text: option.text } : { option: option.index };
+      act("respond", args);
+    });
+    playDialog.append(button);
+  }
+}
+
+async function play(body) {
+  const response = await fetch("/play", {
+    method: body.op ? "POST" : "GET",
+    headers: body.op ? { "content-type": "application/json" } : {},
+    body: body.op ? JSON.stringify(body) : undefined,
+  });
+  let result = {};
+  try { result = await response.json(); } catch { result = { ok: false, reason: "没有返回 JSON" }; }
+  if (typeof result.holding === "boolean") holding = result.holding;
+  playNote.textContent = body.op ? (result.playing || (result.ok ? "完成" : (result.reason || "失败"))) : "";
+  if (!result.ok && result.reason) playNote.className = "bad";
+  else playNote.className = result.ok ? "ok" : "";
+  renderHold();
+  return result;
+}
+
+async function act(tool, args) {
+  if (!holding) {
+    playNote.className = "bad";
+    playNote.textContent = "先取得操作权";
+    return;
+  }
+  await play({ op: "act", tool, args });
+}
+
+document.querySelector("#play-run").addEventListener("submit", event => {
+  event.preventDefault();
+  const data = new FormData(event.target);
+  play({
+    op: "run",
+    request: data.get("request") || "",
+    guide: data.get("guide") || "",
+    games: Number(data.get("games")),
+    turns: Number(data.get("turns")),
+    rule: data.get("rule") || "",
+  });
+});
+document.querySelector("#play-resume").addEventListener("click", () => {
+  const turns = Number(new FormData(document.querySelector("#play-run")).get("turns"));
+  const guide = new FormData(document.querySelector("#play-run")).get("guide") || "";
+  if (!state.session?.id) {
+    playNote.className = "bad";
+    playNote.textContent = "没有正在进行的局";
+    return;
+  }
+  play({ op: "run", resume: state.session.id, turns, guide });
+});
+document.querySelector("#play-stop").addEventListener("click", () => play({ op: "stop" }));
+document.querySelector("#play-claim").addEventListener("click", () => play({ op: "claim", client: "观察页" }));
+document.querySelector("#play-release").addEventListener("click", () => play({ op: "release" }));
+document.querySelector("#play-end").addEventListener("click", () => act("end-turn", {}));
+document.querySelector("#play-save").addEventListener("click", () => act("checkpoint", {}));
+for (const [id, tool, fields] of [
+  ["#play-move", "move", ["unit", "x", "y"]],
+  ["#play-produce", "produce", ["city", "item"]],
+  ["#play-rates", "rates", ["tax", "science"]],
+]) {
+  document.querySelector(id).addEventListener("submit", event => {
+    event.preventDefault();
+    const args = {};
+    for (const name of fields) {
+      if (name === "item") args.item = new FormData(event.target).get("item") || "";
+      else args[name] = numberField(event.target, name);
+    }
+    if (Object.values(args).some(value => value === null || value === "")) {
+      playNote.className = "bad";
+      playNote.textContent = "先填全这一行";
+      return;
+    }
+    act(tool, args);
+  });
+}
+play({}).then(() => renderHold());
+loadRules();
+
+const ruleMeta = document.querySelector("#rule-meta");
+const ruleText = document.querySelector("#rule-text");
+const ruleVersion = document.querySelector("#rule-version");
+const rulePick = document.querySelector("#rule-pick");
+
+async function loadRules() {
+  const listed = await fetch("/rules").then(response => response.json()).catch(() => ({}));
+  if (Array.isArray(listed.rules)) {
+    for (const select of [rulePick, document.querySelector("#start-rule")]) {
+      const current = select.value;
+      const keep = select.id === "start-rule" ? select.querySelector('option[value="none"]') : null;
+      select.replaceChildren();
+      for (const rule of listed.rules) {
+        const option = document.createElement("option");
+        option.value = rule.name;
+        option.textContent = rule.title || rule.name;
+        select.append(option);
+      }
+      if (keep) select.append(keep);
+      if ([...select.options].some(option => option.value === current)) select.value = current;
+    }
+  }
+  await loadRule();
+}
+
+async function loadRule(version) {
+  const query = version ? `?version=${encodeURIComponent(version)}` : "";
+  const result = await fetch(`/rule${query}`).then(response => response.json()).catch(() => ({ ok: false }));
+  if (!result.ok) {
+    ruleMeta.textContent = result.reason || "没有正在进行的局";
+    return;
+  }
+  ruleText.value = result.text || "";
+  const label = result.version ? `正在看第 ${result.version} 版` : "正在看现在的法则";
+  const count = Array.isArray(result.versions) ? result.versions.length : 0;
+  ruleMeta.textContent = `${label}。这一局已留下 ${count} 版。`;
+  const chosen = ruleVersion.value;
+  ruleVersion.replaceChildren();
+  const now = document.createElement("option");
+  now.value = "";
+  now.textContent = "现在";
+  ruleVersion.append(now);
+  for (const row of result.versions || []) {
+    const option = document.createElement("option");
+    option.value = String(row.version);
+    option.textContent = `第 ${row.version} 版 ${String(row.time || "").slice(0, 16)}`;
+    ruleVersion.append(option);
+  }
+  if ([...ruleVersion.options].some(option => option.value === (version || chosen))) ruleVersion.value = version || "";
+}
+
+ruleVersion.addEventListener("change", () => loadRule(ruleVersion.value));
+document.querySelector("#rule-save").addEventListener("click", async () => {
+  const result = await fetch("/rule", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ text: ruleText.value }),
+  }).then(response => response.json());
+  ruleMeta.textContent = result.ok ? (result.changed ? "已保存，上一版留在这一局" : "没有改动") : (result.reason || "保存失败");
+  if (result.ok) await loadRule();
+});
+document.querySelector("#rule-use").addEventListener("click", async () => {
+  const result = await fetch("/rule", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ use: rulePick.value }),
+  }).then(response => response.json());
+  ruleMeta.textContent = result.ok ? "已换上，上一版留在这一局" : (result.reason || "没有换上");
+  if (result.ok) await loadRule();
+});
+
 function renderAll() {
   renderGateway();
   renderMap();
   renderGame();
+  renderPlayDialog();
   renderRun();
   prompt.textContent = state.prompt;
   renderThoughts();

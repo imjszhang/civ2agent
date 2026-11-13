@@ -10,10 +10,83 @@
   <header>
     <h1>civ2agent</h1>
     <p id="link">正在连接观察页…</p>
+    <form method="post" action="/logout"><button type="submit">退出</button></form>
   </header>
   <main>
     <section id="board">
-      <h2>网关</h2>
+      <h2>操作</h2>
+      <p class="hint">开局会在跑游戏的那台电脑上启动文明 II。鼠标对话框仍移动那台电脑的鼠标，窗口留在那块屏幕上。</p>
+      <div id="play" class="panel">
+        <p id="play-hold">还没有操作权</p>
+        <p id="play-note"></p>
+        <form id="play-run" class="play-row">
+          <textarea name="request" rows="2" placeholder="怎么开局，例如：罗马人，国王，大地图" aria-label="开局要求"></textarea>
+          <label>攻略
+            <select name="guide" aria-label="攻略">
+              <option value="">不带攻略</option>
+              <option value="jin-yuan">金元帝国</option>
+              <option value="jin-yuan-rush">金元帝国·神级快攻</option>
+            </select>
+          </label>
+          <label>法则
+            <select name="rule" id="start-rule" aria-label="法则">
+              <option value="basic">基本</option>
+              <option value="none">不使用</option>
+            </select>
+          </label>
+          <label>局数 <input name="games" inputmode="numeric" value="1" aria-label="局数"></label>
+          <label>每局回合 <input name="turns" inputmode="numeric" value="10" aria-label="每局回合"></label>
+          <button type="submit">开局并玩</button>
+          <button type="button" id="play-resume">接着玩这一局</button>
+          <button type="button" id="play-stop">停下</button>
+        </form>
+        <div id="play-dialog" class="play-row"></div>
+        <details>
+          <summary>单步操作</summary>
+          <div class="play-row">
+            <button type="button" id="play-claim">取得操作权</button>
+            <button type="button" id="play-release">交回</button>
+            <button type="button" id="play-end">结束回合</button>
+            <button type="button" id="play-save">存盘</button>
+          </div>
+          <form id="play-move" class="play-row">
+            <span>移动</span>
+            <input name="unit" inputmode="numeric" placeholder="单位" aria-label="单位">
+            <input name="x" inputmode="numeric" placeholder="x" aria-label="x">
+            <input name="y" inputmode="numeric" placeholder="y" aria-label="y">
+            <button type="submit">走一步</button>
+          </form>
+          <form id="play-produce" class="play-row">
+            <span>生产</span>
+            <input name="city" inputmode="numeric" placeholder="城市" aria-label="城市">
+            <input name="item" placeholder="项目" aria-label="项目">
+            <button type="submit">改产</button>
+          </form>
+          <form id="play-rates" class="play-row">
+            <span>税率</span>
+            <input name="tax" inputmode="numeric" placeholder="税 0–10" aria-label="税收">
+            <input name="science" inputmode="numeric" placeholder="科 0–10" aria-label="科研">
+            <button type="submit">设定</button>
+          </form>
+        </details>
+      </div>
+      <h2 class="next">这局的法则</h2>
+      <p class="hint">改完保存后，上一份留在这一局。下一段 agent 读的是保存后的这一份。</p>
+      <div id="rules" class="panel">
+        <p id="rule-meta">没有正在进行的局</p>
+        <div class="play-row">
+          <label>已存版本
+            <select id="rule-version" aria-label="已存版本"><option value="">现在</option></select>
+          </label>
+          <label>换一套
+            <select id="rule-pick" aria-label="换一套法则"><option value="basic">基本</option></select>
+          </label>
+          <button type="button" id="rule-use">换上</button>
+          <button type="button" id="rule-save">保存，留下上一版</button>
+        </div>
+        <textarea id="rule-text" rows="14" aria-label="法则全文"></textarea>
+      </div>
+      <h2 class="next">网关</h2>
       <div id="gateway" class="panel"></div>
       <h2 class="next">地图</h2>
       <p class="hint">已探索的格子。黄条是农田，蓝点是灌溉，黑点是矿山，白框是要塞，红点是污染，横线是道路或铁路。点一格看完整状态。</p>

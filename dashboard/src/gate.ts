@@ -83,11 +83,26 @@ export class Gate {
     };
   }
 
+  /** The client that holds the lease, after an idle one has expired. */
+  holderName(): string | null {
+    this.expire();
+    return this.holder?.client ?? null;
+  }
+
   claim(client: string): CliResult {
     this.expire();
     const name = client.trim().slice(0, 80);
     if (!name) return { ok: false, error: "usage", reason: "claim 需要调用方的名字" };
-    if (this.holder) return { ok: false, error: "busy", reason: `租约在 ${this.holder.client} 手里` };
+    if (this.holder) {
+      if (this.holder.client === name) {
+        this.holder.touched = this.now();
+        return { ok: true, lease: this.holder.lease, client: name, since: this.holder.since };
+      }
+      return {
+        ok: false, error: "busy", reason: `租约在 ${this.holder.client} 手里`,
+        holder: this.holder.client, lease: this.holder.lease,
+      };
+    }
     const since = this.stamp();
     const lease = randomUUID();
     this.holder = { lease, client: name, since, touched: this.now() };
@@ -98,7 +113,28 @@ export class Gate {
   release(lease: string): CliResult {
     this.expire();
     if (!this.holder || this.holder.lease !== lease) return { ok: false, error: "illegal", reason: "没有这张租约" };
-    if (this.current || this.observers > 0) return { ok: false, error: "busy", reason: this.busyReason() };
+    if (this.current) return { ok: false, error: "busy", reason: this.busyReason() };
+    this.holder = null;
+    this.publishHolder();
+    return { ok: true };
+  }
+
+  /** Give back an idle lease by the holder's name, without the lease id. */
+  releaseNamed(client: string): CliResult {
+    this.expire();
+    const name = client.trim();
+    if (!this.holder || this.holder.client !== name) return { ok: false, error: "illegal", reason: "没有这张租约" };
+    if (this.current) return { ok: false, error: "busy", reason: this.busyReason() };
+    this.holder = null;
+    this.publishHolder();
+    return { ok: true };
+  }
+
+  /** Drop whoever holds an idle lease. The page uses this when the lease id was lost. */
+  releaseCurrent(): CliResult {
+    this.expire();
+    if (this.current) return { ok: false, error: "busy", reason: this.busyReason() };
+    if (!this.holder) return { ok: true };
     this.holder = null;
     this.publishHolder();
     return { ok: true };

@@ -86,6 +86,25 @@ test("a mutation waits out a status read instead of failing", async () => {
   assert.equal(ran, true);
 });
 
+test("the same client gets its lease back, and a lost id can be given back by name", () => {
+  const gate = new Gate(60_000, () => 0);
+  const held = gate.claim("local-gateway");
+  assert.equal(held.ok, true);
+  const again = gate.claim("local-gateway");
+  assert.equal(again.ok, true);
+  assert.equal(again.lease, held.lease);
+  const other = gate.claim("别人");
+  assert.equal(other.ok, false);
+  assert.equal(other.holder, "local-gateway");
+  assert.equal(other.lease, held.lease);
+  assert.equal(gate.begin("start_game", String(held.lease)).ok, true);
+  assert.equal(gate.releaseNamed("local-gateway").ok, false);
+  gate.end("start_game", { ok: true });
+  assert.equal(gate.releaseNamed("local-gateway").ok, true);
+  assert.equal(gate.leaseId(), null);
+  assert.equal(gate.releaseCurrent().ok, true);
+});
+
 test("an idle lease can be dropped, and a running command keeps it", () => {
   const gate = new Gate(60_000, () => 0);
   const held = gate.claim("甲");
@@ -199,6 +218,28 @@ if (args[0] === "tools") {
   } finally {
     await open.close();
     await locked.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the page gives back a lease whose id was lost", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "civ2-release-"));
+  const script = path.join(dir, "fake.mjs");
+  await writeFile(script, `const args = process.argv.slice(2);
+if (args[0] === "tools") console.log(JSON.stringify({ ok: true, tools: [] }));
+else console.log(JSON.stringify({ ok: true }));
+`);
+  const dash = await startDashboard(options("127.0.0.1", "", script, dir));
+  try {
+    const first = await play(dash.url, "", { op: "claim", client: "local-gateway" });
+    assert.equal(first.ok, true);
+    const released = await play(dash.url, "", { op: "release" });
+    assert.equal(released.ok, true, JSON.stringify(released));
+    const again = await play(dash.url, "", { op: "claim", client: "观察页" });
+    assert.equal(again.ok, true);
+    assert.notEqual(again.lease, first.lease);
+  } finally {
+    await dash.close();
     await rm(dir, { recursive: true, force: true });
   }
 });

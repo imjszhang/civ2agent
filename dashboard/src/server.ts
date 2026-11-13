@@ -334,7 +334,7 @@ export async function startDashboard(options: DashboardOptions): Promise<Running
   }
 
   function claimClient(client: string): CliResult {
-    if (gameDown()) gate.releaseIdle();
+    if (gate.holderName() !== client.trim() && gameDown()) gate.releaseIdle();
     return gate.claim(client);
   }
 
@@ -407,8 +407,12 @@ export async function startDashboard(options: DashboardOptions): Promise<Running
     const fromBody = typeof body.lease === "string" ? body.lease : "";
     const lease = fromBody || cookieValue(header(req, "cookie"), LEASE_COOKIE);
     if (body.op === "release" || body.op === "stop") {
+      if (gate.view().command) {
+        sendJson(res, 200, { ok: false, error: "busy", reason: gate.view().holder ? `${gate.view().holder} 正在执行` : "有命令在跑", holding: false });
+        return;
+      }
       stopRunner();
-      const result = gate.release(lease);
+      const result = lease && gate.leaseId() === lease ? gate.release(lease) : gate.releaseCurrent();
       publish();
       const extra = result.ok === true ? { "set-cookie": setCookie(LEASE_COOKIE, "") } : undefined;
       sendJson(res, 200, { ...result, holding: result.ok !== true, playing: null }, extra);

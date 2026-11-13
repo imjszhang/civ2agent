@@ -137,20 +137,24 @@ export function createMcpServer(deps: McpDeps): McpServer {
     runMutation(deps.gate, command, lease, run, deps.onActivity);
 
   mcp.registerTool("claim", {
-    description: "领取这台机器上的游戏租约。变更工具都要带返回的 lease。游戏没在跑且没有命令在执行时，接过空闲租约；否则已有租约返回 busy。",
+    description: "领取这台机器上的游戏租约。变更工具都要带返回的 lease。同一 client 再次调用时交还它已经持有的那把。别人持有且没有命令在执行、游戏也没在跑时，接过空闲租约；否则返回 busy，并带上 holder 和当前 lease。",
     inputSchema: { client: z.string().describe("调用方的名字，显示在观察页上") },
   }, async args => {
-    if (deps.gameDown()) deps.gate.releaseIdle();
+    if (deps.gate.holderName() !== args.client.trim() && deps.gameDown()) deps.gate.releaseIdle();
     const result = deps.gate.claim(args.client);
     deps.onActivity();
     return asTool(result);
   });
 
   mcp.registerTool("release", {
-    description: "交回租约。有命令在跑时返回 busy。",
-    inputSchema: { lease: z.string().describe("claim 返回的租约") },
+    description: "交回租约。有命令在跑时返回 busy。没有命令在跑时，可以不带 lease，改用 client 交回持有者自己的那把。",
+    inputSchema: {
+      lease: z.string().optional().describe("claim 返回的租约"),
+      client: z.string().optional().describe("持有者名字。没有命令在跑、又没有 lease 时用来交回"),
+    },
   }, async args => {
-    const result = deps.gate.release(args.lease);
+    const lease = args.lease?.trim() ?? "";
+    const result = lease ? deps.gate.release(lease) : deps.gate.releaseNamed(args.client ?? "");
     deps.onActivity();
     return asTool(result);
   });

@@ -514,8 +514,36 @@ function numberField(form, name) {
   return Number.isInteger(value) ? value : null;
 }
 
+const playIdle = document.querySelector("#play-idle");
+const playLive = document.querySelector("#play-live");
+const playLiveNote = document.querySelector("#play-live-note");
+const playSteps = document.querySelector("#play-steps");
+
+function gameLive() {
+  const view = state.gateway;
+  if (view?.playing || view?.command) return true;
+  const status = state.session?.status;
+  return status === "active" || status === "running" || status === "starting";
+}
+
+function renderPlayMode() {
+  const live = gameLive();
+  playIdle.hidden = live;
+  playLive.hidden = !live;
+  playSteps.hidden = !live;
+  if (!live) playSteps.open = false;
+  if (live) {
+    const title = state.session?.title;
+    playLiveNote.textContent = title
+      ? `正在跑「${title}」。开新局要先停下。`
+      : "这一局正在跑。开新局要先停下。";
+  }
+}
+
 function renderHold() {
   playHold.textContent = holding ? "本页持有操作权" : "还没有操作权";
+  playHold.classList.toggle("ok", holding);
+  renderPlayMode();
 }
 
 function renderPlayDialog() {
@@ -685,6 +713,7 @@ document.querySelector("#rule-use").addEventListener("click", async () => {
 
 function renderAll() {
   renderGateway();
+  renderPlayMode();
   renderMap();
   renderGame();
   renderPlayDialog();
@@ -716,6 +745,7 @@ function onThought(data) {
 }
 
 const records = document.querySelector("#pack-list");
+const GAME_STATUS = { paused: "已暂停", ended: "已结束", running: "进行中" };
 const packNote = document.querySelector("#pack-note");
 
 async function loadRecords() {
@@ -723,15 +753,31 @@ async function loadRecords() {
   if (!response.ok) { records.textContent = "记录读不了"; return; }
   const body = await response.json();
   records.replaceChildren();
-  for (const game of body.games ?? []) {
-    const row = document.createElement("p");
+  const games = body.games ?? [];
+  if (!games.length) { records.textContent = "还没有记录"; return; }
+  const el = table(["这一局", "状态", "回合", ""], [], () => []);
+  for (const game of games) {
+    const tr = document.createElement("tr");
+    const name = document.createElement("td");
+    name.textContent = game.title || game.id;
+    name.title = game.id;
+    const status = document.createElement("td");
+    const tag = document.createElement("span");
+    tag.className = game.active ? "state active" : "state";
+    tag.textContent = game.active ? "正在玩" : (GAME_STATUS[game.status] || game.status || "—");
+    status.append(tag);
+    const turn = document.createElement("td");
+    turn.className = "num";
+    turn.textContent = game.turn ?? "?";
+    const get = document.createElement("td");
     const link = document.createElement("a");
     link.href = `/pack/${encodeURIComponent(game.id)}`;
     link.textContent = "下载";
-    row.append(`${game.title || game.id} · ${game.status || ""} · 第 ${game.turn ?? "?"} 回合 `, link);
-    records.append(row);
+    get.append(link);
+    tr.append(name, status, turn, get);
+    el.append(tr);
   }
-  if (!records.childElementCount) records.textContent = "还没有记录";
+  records.append(el);
 }
 
 document.querySelector("#pack-upload").addEventListener("submit", async event => {

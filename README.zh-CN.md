@@ -203,7 +203,7 @@ npm start
 
 MCP 仍然要 `Authorization: Bearer <令牌>`。页面和 `/events` 用浏览器带不上这个头，所以打开 `/login`，提交同一个令牌。网址带 `?token=` 时同样登录，随后地址栏不再留这个参数。登录 cookie 是 `HttpOnly`，保存 180 天，这台浏览器下次打开直接进入。`/logout` 清掉它。页面的主操作是开局：写下怎么开、可选攻略、局数（1 到 20）和每局回合（1 到 500），然后「开局并玩」。它在跑游戏的电脑上按这个次数启动 `civ2-play.mjs`，一局结束再开下一局。正在进行的局用「接着玩这一局」。停下会结束这次安排并交回租约。回答对话框、结束回合、存盘、走一步、改产、设定税率收在「单步操作」里。`via` 为 `mouse` 的对话框仍会移动跑游戏那台电脑的鼠标，游戏窗口留在那块屏幕上。
 
-同一时刻只有一局、一次会改局面的调用。`claim`（`client` 是显示在观察页上的名字）返回 `lease`。开局、续玩、存盘、收尾和代打都带上它。`release` 交回。空闲 10 分钟后租约放开（`GATE_LEASE_IDLE_MS`）。第二条改动立刻返回 `busy`，不排队。租约在手里时，`games/.lease` 记下观察页进程。`civ2ctl.py` 和 `civ2session.py` 在碰管道之前，除非环境变量 `CIV2AGENT_LEASE` 就是这张租约，否则返回 `busy`。本机 runner 因此把管道让出来。进程已经不在时，这把锁不作数。
+同一时刻只有一局、一次会改局面的调用。`claim`（`client` 是显示在观察页上的名字）返回 `lease`。开局、续玩、存盘、收尾和代打都带上它。`release` 交回。空闲 10 分钟后租约放开（`GATE_LEASE_IDLE_MS`）。游戏没在跑、也没有命令在执行时，下一次 `claim` 直接接过空闲租约。第二条改动立刻返回 `busy`，不排队。碰上正在读取局面时，会等这一次读完再执行。租约在手里时，`games/.lease` 记下观察页进程。`civ2ctl.py` 和 `civ2session.py` 在碰管道之前，除非环境变量 `CIV2AGENT_LEASE` 就是这张租约，否则返回 `busy`。本机 runner 因此把管道让出来。进程已经不在时，这把锁不作数。
 
 `list_games`、`game_status`、`read_game` 不需要租约。`status`、`state`、`dialog` 也不需要；锁被占用时它们返回 `busy` 和上一份快照，不再发命令。`respond`、`move` 这类代打需要租约。网关上没有 `save-game`、`load-game`、`quit-game`，用 `checkpoint`、`resume_game`、`close_game`。
 

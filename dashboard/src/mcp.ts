@@ -24,6 +24,8 @@ export type McpDeps = {
   playTools: CtlTool[];
   readSnapshot: () => GameView;
   onActivity: () => void;
+  /** True when no game process is up and nothing is launching one. */
+  gameDown: () => boolean;
 };
 
 export function bindAllowed(host: string, token: string): boolean {
@@ -135,9 +137,10 @@ export function createMcpServer(deps: McpDeps): McpServer {
     runMutation(deps.gate, command, lease, run, deps.onActivity);
 
   mcp.registerTool("claim", {
-    description: "领取这台机器上的游戏租约。变更工具都要带返回的 lease。已有租约时返回 busy。",
+    description: "领取这台机器上的游戏租约。变更工具都要带返回的 lease。游戏没在跑且没有命令在执行时，接过空闲租约；否则已有租约返回 busy。",
     inputSchema: { client: z.string().describe("调用方的名字，显示在观察页上") },
   }, async args => {
+    if (deps.gameDown()) deps.gate.releaseIdle();
     const result = deps.gate.claim(args.client);
     deps.onActivity();
     return asTool(result);

@@ -69,6 +69,36 @@ test("a mutation without a lease is rejected, and an idle lease can be claimed a
   assert.notEqual(second.lease, first.lease);
 });
 
+test("a mutation waits out a status read instead of failing", async () => {
+  const gate = new Gate(60_000, () => 0);
+  const held = gate.claim("甲");
+  assert.equal(gate.beginObserve(), null);
+  let ran = false;
+  const pending = runMutation(gate, "resume_game", String(held.lease), async () => {
+    ran = true;
+    return { ok: true };
+  });
+  await new Promise(resolve => setTimeout(resolve, 80));
+  assert.equal(ran, false);
+  gate.endObserve();
+  const result = await pending;
+  assert.equal(result.ok, true);
+  assert.equal(ran, true);
+});
+
+test("an idle lease can be dropped, and a running command keeps it", () => {
+  const gate = new Gate(60_000, () => 0);
+  const held = gate.claim("甲");
+  assert.equal(gate.releaseIdle(), true);
+  assert.equal(gate.leaseId(), null);
+  const next = gate.claim("乙");
+  assert.equal(next.ok, true);
+  assert.notEqual(next.lease, held.lease);
+  assert.equal(gate.begin("resume_game", String(next.lease)).ok, true);
+  assert.equal(gate.releaseIdle(), false);
+  assert.equal(gate.claim("丙").ok, false);
+});
+
 test("game ids stay inside one directory level", async () => {
   assert.equal(resolveGameDir("D:/games", "..").ok, false);
   assert.equal(resolveGameDir("D:/games", "D:/elsewhere").ok, false);
@@ -169,6 +199,27 @@ if (args[0] === "tools") {
   } finally {
     await open.close();
     await locked.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a claim takes an idle lease when the game is not running", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "civ2-down-"));
+  const script = path.join(dir, "fake.mjs");
+  await writeFile(script, `const args = process.argv.slice(2);
+if (args.includes("status")) console.log(JSON.stringify({ ok: false, error: "not_connected", reason: "游戏没有开" }));
+else if (args[0] === "tools") console.log(JSON.stringify({ ok: true, tools: [] }));
+else console.log(JSON.stringify({ ok: true }));
+`);
+  const dash = await startDashboard(options("127.0.0.1", "", script, dir));
+  try {
+    const first = await play(dash.url, "", { op: "claim", client: "local-gateway" });
+    assert.equal(first.ok, true);
+    const second = await play(dash.url, "", { op: "claim", client: "启动检查" });
+    assert.equal(second.ok, true, JSON.stringify(second));
+    assert.notEqual(second.lease, first.lease);
+  } finally {
+    await dash.close();
     await rm(dir, { recursive: true, force: true });
   }
 });

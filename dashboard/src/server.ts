@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadDotenv } from "../../dotenv.mjs";
-import { runCli } from "./cli.js";
+import { runCli, type CliResult } from "./cli.js";
 import { readGame } from "./game.js";
 import { commandFromLog, earlierUsage, freshTail, latestEvents, piecesFromRuntime, readActive, readAppended, readPlanBrief, readSession, type Tail } from "./follow.js";
 import { Gate, runMutation, whenIdle } from "./gate.js";
@@ -329,6 +329,15 @@ export async function startDashboard(options: DashboardOptions): Promise<Running
     }
   }
 
+  function gameDown(): boolean {
+    return !snapshot.game.connected && !runner && !playing;
+  }
+
+  function claimClient(client: string): CliResult {
+    if (gameDown()) gate.releaseIdle();
+    return gate.claim(client);
+  }
+
   const deps: McpDeps = {
     python: options.python,
     ctl: options.ctl,
@@ -338,6 +347,7 @@ export async function startDashboard(options: DashboardOptions): Promise<Running
     playTools,
     readSnapshot: () => snapshot.game,
     onActivity: publish,
+    gameDown,
   };
   const mcp = createMcpHandler(deps, options.token);
 
@@ -387,7 +397,7 @@ export async function startDashboard(options: DashboardOptions): Promise<Running
     }
     if (body.op === "claim") {
       const client = typeof body.client === "string" && body.client.trim() ? body.client : "观察页";
-      const result = gate.claim(client);
+      const result = claimClient(client);
       publish();
       const extra = result.ok === true && typeof result.lease === "string"
         ? { "set-cookie": setCookie(LEASE_COOKIE, result.lease) } : undefined;
@@ -438,7 +448,7 @@ export async function startDashboard(options: DashboardOptions): Promise<Running
       let owned = lease;
       let cookie: string | undefined;
       if (!owned || gate.leaseId() !== owned) {
-        const claimed = gate.claim("观察页");
+        const claimed = claimClient("观察页");
         if (claimed.ok !== true || typeof claimed.lease !== "string") {
           sendJson(res, 200, { ...claimed, holding: false });
           return;

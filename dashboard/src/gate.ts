@@ -104,6 +104,14 @@ export class Gate {
     return { ok: true };
   }
 
+  /** Drop a holder that is not running a command. The caller decides when that is safe. */
+  releaseIdle(): boolean {
+    if (!this.holder || this.current) return false;
+    this.holder = null;
+    this.publishHolder();
+    return true;
+  }
+
   /** Take the write lock. The caller must `end` it, including when the command fails. */
   begin(command: string, lease: string): CliResult {
     this.expire();
@@ -144,7 +152,12 @@ export async function runMutation(
   run: () => Promise<CliResult>,
   onActivity?: () => void,
 ): Promise<CliResult> {
-  const begun = gate.begin(command, lease);
+  const deadline = Date.now() + 8_000;
+  let begun = gate.begin(command, lease);
+  while (begun.ok !== true && begun.reason === "正在读取局面" && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 50));
+    begun = gate.begin(command, lease);
+  }
   if (begun.ok !== true) return begun;
   onActivity?.();
   let result: CliResult;

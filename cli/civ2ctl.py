@@ -72,12 +72,111 @@ class GamePathError(Exception):
     """The Civ2 install could not be resolved. The message is the reason to show."""
 
 
+DOTENV_FILE = AGENT_ROOT / ".env"
+# The dashboard sets this for one call. A value in .env would outlive that call.
+DOTENV_SKIP = frozenset({"CIV2AGENT_LEASE"})
+_dotenv_error = None
+
+
+def _dotenv_value(raw):
+    """The text after '=', or None when a quoted value never closes."""
+    if raw[:1] in "'\"":
+        quote = raw[0]
+        body = []
+        index = 1
+        while index < len(raw):
+            char = raw[index]
+            if quote == '"' and char == "\\" and index + 1 < len(raw):
+                nxt = raw[index + 1]
+                mapped = {"n": "\n", "r": "\r", "t": "\t", "\\": "\\", '"': '"'}.get(nxt)
+                if mapped is None:
+                    body.append("\\")
+                    body.append(nxt)
+                else:
+                    body.append(mapped)
+                index += 2
+                continue
+            if char == quote:
+                rest = raw[index + 1 :].strip()
+                if rest and not rest.startswith("#"):
+                    return None
+                return "".join(body)
+            body.append(char)
+            index += 1
+        return None
+    cut = raw.find(" #")
+    if cut != -1:
+        raw = raw[:cut]
+    return raw.rstrip()
+
+
+def _dotenv_assignment(line):
+    text = line.strip()
+    if not text or text.startswith("#"):
+        return None
+    if text.startswith("export "):
+        text = text[7:].lstrip()
+    if "=" not in text:
+        return None
+    key, raw = text.split("=", 1)
+    key = key.strip()
+    if not key or key[0].isdigit() or any(not (char.isalnum() or char == "_") for char in key):
+        return None
+    value = _dotenv_value(raw.lstrip())
+    if value is None:
+        return None
+    return key, value
+
+
+def load_dotenv(path=None):
+    """Fill environment variables that are not already set, from a KEY=VALUE file.
+
+    Blank lines and # comments are ignored. A leading "export " is allowed.
+    Double quotes honor backslash, quote, n, r and t escapes; any other
+    backslash stays. Single quotes are literal. An unquoted " #" starts a
+    comment. CIV2AGENT_LEASE is never taken from this file. A missing file
+    sets nothing. Returns the keys that were set.
+    """
+    file = DOTENV_FILE if path is None else Path(path)
+    try:
+        text = file.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        raise GamePathError(f".env 读不了：{exc}") from exc
+    applied = []
+    for line in text.splitlines():
+        parsed = _dotenv_assignment(line)
+        if parsed is None:
+            continue
+        key, value = parsed
+        if key in DOTENV_SKIP or key in os.environ:
+            continue
+        os.environ[key] = value
+        applied.append(key)
+    return applied
+
+
+def _load_project_dotenv():
+    global _dotenv_error
+    try:
+        load_dotenv()
+    except GamePathError as exc:
+        _dotenv_error = exc
+
+
+_load_project_dotenv()
+
+
 def game_root():
     """Directory that contains civ2.exe. This project does not have to live inside it.
 
-    CIV2AGENT_GAME, else game.json {"game": "..."} in the project root, else the
+    CIV2AGENT_GAME (the process environment, filled from .env when that variable
+    was unset), else game.json {"game": "..."} in the project root, else the
     parent directory when civ2.exe is actually there. A relative path is relative
     to the project root. The directory must contain civ2.exe."""
+    if _dotenv_error is not None:
+        raise _dotenv_error
     raw = (os.environ.get("CIV2AGENT_GAME") or "").strip()
     source = "CIV2AGENT_GAME"
     if not raw and GAME_FILE.is_file():
@@ -98,12 +197,14 @@ def game_root():
     parent = AGENT_ROOT.parent.resolve()
     if (parent / "civ2.exe").is_file():
         return parent
-    raise GamePathError("没有设置游戏目录。复制 game.example.json 为 game.json 并写上 civ2.exe 所在目录，"
-                        "或设置环境变量 CIV2AGENT_GAME")
+    raise GamePathError("没有设置游戏目录。在 .env 里写 CIV2AGENT_GAME，"
+                        "或复制 game.example.json 为 game.json，或设置环境变量 CIV2AGENT_GAME")
 
 
 def games_dir():
     """Where agent-owned games live (civ2session.py); CIV2AGENT_GAMES_DIR overrides it."""
+    if _dotenv_error is not None:
+        raise _dotenv_error
     return Path(os.environ.get("CIV2AGENT_GAMES_DIR") or AGENT_ROOT / "games")
 
 

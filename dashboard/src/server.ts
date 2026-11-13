@@ -4,6 +4,7 @@ import { readFile, mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadDotenv } from "../../dotenv.mjs";
 import { runCli } from "./cli.js";
 import { readGame } from "./game.js";
 import { commandFromLog, earlierUsage, freshTail, latestEvents, piecesFromRuntime, readActive, readAppended, readPlanBrief, readSession, type Tail } from "./follow.js";
@@ -664,6 +665,7 @@ function invokedDirectly(): boolean {
 }
 
 if (invokedDirectly()) {
+  loadDotenv(path.join(AGENT, ".env"));
   const options = optionsFromEnv();
   startDashboard(options).then(running => {
     for (const line of listenLines(options.host, running.port)) console.log(line);

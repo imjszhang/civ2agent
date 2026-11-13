@@ -151,7 +151,7 @@ def call(payload, connect_s=10.0):
 
 
 def game_root():
-    """The Civ2 install from CIV2AGENT_GAME, game.json, or a parent that has civ2.exe."""
+    """The Civ2 install from CIV2AGENT_GAME, .env, game.json, or a parent that has civ2.exe."""
     try:
         return ctl.game_root()
     except ctl.GamePathError as exc:

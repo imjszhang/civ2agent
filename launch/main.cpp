@@ -116,6 +116,93 @@ std::wstring FindFileUp(const std::wstring& start, const wchar_t* name, int limi
   return L"";
 }
 
+std::string Trim(const std::string& text) {
+  size_t begin = 0;
+  while (begin < text.size() && (text[begin] == ' ' || text[begin] == '\t')) ++begin;
+  size_t end = text.size();
+  while (end > begin && (text[end - 1] == ' ' || text[end - 1] == '\t' || text[end - 1] == '\r')) --end;
+  return text.substr(begin, end - begin);
+}
+
+// CIV2AGENT_GAME from one .env line, using the same quoting rules as load_dotenv.
+// *found is set when that key is present, including when its value is empty.
+void DotenvGameLine(const std::string& line, std::string* value, bool* found) {
+  std::string text = Trim(line);
+  if (text.empty() || text[0] == '#') return;
+  if (text.rfind("export ", 0) == 0) text = Trim(text.substr(7));
+  auto eq = text.find('=');
+  if (eq == std::string::npos) return;
+  std::string key = Trim(text.substr(0, eq));
+  if (key != "CIV2AGENT_GAME") return;
+  std::string raw = text.substr(eq + 1);
+  size_t start = 0;
+  while (start < raw.size() && (raw[start] == ' ' || raw[start] == '\t')) ++start;
+  raw = raw.substr(start);
+  if (!raw.empty() && (raw[0] == '\'' || raw[0] == '"')) {
+    char quote = raw[0];
+    std::string body;
+    for (size_t i = 1; i < raw.size(); ++i) {
+      char c = raw[i];
+      if (quote == '"' && c == '\\' && i + 1 < raw.size()) {
+        char n = raw[++i];
+        if (n == 'n') body.push_back('\n');
+        else if (n == 'r') body.push_back('\r');
+        else if (n == 't') body.push_back('\t');
+        else if (n == '\\' || n == '"') body.push_back(n);
+        else {
+          body.push_back('\\');
+          body.push_back(n);
+        }
+        continue;
+      }
+      if (c == quote) {
+        std::string rest = Trim(raw.substr(i + 1));
+        if (!rest.empty() && rest[0] != '#') return;
+        *value = body;
+        *found = true;
+        return;
+      }
+      body.push_back(c);
+    }
+    return;
+  }
+  auto cut = raw.find(" #");
+  *value = Trim(cut == std::string::npos ? raw : raw.substr(0, cut));
+  *found = true;
+}
+
+std::wstring GameFromDotenv(const std::string& text, bool* found) {
+  *found = false;
+  std::string value;
+  size_t i = 0;
+  while (i < text.size() && !*found) {
+    size_t end = text.find('\n', i);
+    if (end == std::string::npos) end = text.size();
+    DotenvGameLine(text.substr(i, end - i), &value, found);
+    i = end + (end < text.size() ? 1 : 0);
+  }
+  return *found ? Utf8ToWide(value) : L"";
+}
+
+// CIV2AGENT_GAME from a .env file walked up from start. Empty when the file or
+// the key is absent. A file that cannot be read sets *broken and returns empty.
+std::wstring ConfiguredDotenv(const std::wstring& start, bool* broken) {
+  *broken = false;
+  std::wstring file = FindFileUp(start, L".env", 6);
+  if (file.empty()) return L"";
+  std::string bytes;
+  if (!ReadFileBytes(file, &bytes)) {
+    wprintf(L".env 读不了：%ls\n", file.c_str());
+    *broken = true;
+    return L"";
+  }
+  bool found = false;
+  std::wstring game = GameFromDotenv(bytes, &found);
+  if (!found || game.empty()) return L"";
+  if (game.find(L':') == std::wstring::npos && game.rfind(L"\\\\", 0) != 0) game = Parent(file) + L"\\" + game;
+  return game;
+}
+
 // The directory named in game.json, or empty when no file is found.
 // A file that cannot be read sets *broken and returns empty.
 std::wstring ConfiguredGame(const std::wstring& start, bool* broken) {
@@ -251,6 +338,12 @@ int wmain(int argc, wchar_t** argv) {
     if (n > 0 && n < 32768) game = env;
   }
   bool broken = false;
+  if (game.empty()) game = ConfiguredDotenv(ExeDir(), &broken);
+  if (game.empty() && !broken) {
+    wchar_t cwd[MAX_PATH] = {};
+    if (GetCurrentDirectoryW(MAX_PATH, cwd)) game = ConfiguredDotenv(cwd, &broken);
+  }
+  if (broken) return 1;
   if (game.empty()) game = ConfiguredGame(ExeDir(), &broken);
   if (game.empty() && !broken) {
     wchar_t cwd[MAX_PATH] = {};
@@ -259,7 +352,7 @@ int wmain(int argc, wchar_t** argv) {
   if (broken) return 1;
   if (game.empty()) game = FindGameDir(ExeDir());
   if (game.empty() || !Exists(game + L"\\civ2.exe")) {
-    wprintf(L"找不到 civ2.exe。用 --game、环境变量 CIV2AGENT_GAME 或 game.json 指定安装目录。\n");
+    wprintf(L"找不到 civ2.exe。用 --game、环境变量 CIV2AGENT_GAME、.env 或 game.json 指定安装目录。\n");
     return 1;
   }
   if (WaitNamedPipeW(L"\\\\.\\pipe\\civ2agent", 300)) {

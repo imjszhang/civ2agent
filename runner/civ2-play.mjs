@@ -8,7 +8,10 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { plan, probe, run } from "js-agent-runtime";
-import { CLI, RUNNER_DIR, buildPrompt, describeEvent, lastJson, loadGuides, loadTargets, pickTarget, segmentGoal } from "./lib.mjs";
+import { loadDotenv } from "../dotenv.mjs";
+import { AGENT_ROOT, CLI, RUNNER_DIR, buildPrompt, describeEvent, lastJson, loadGuides, loadTargets, pickTarget, segmentGoal } from "./lib.mjs";
+
+loadDotenv(path.join(AGENT_ROOT, ".env"));
 
 function usage() {
   let listed = "（注册表读不了）";

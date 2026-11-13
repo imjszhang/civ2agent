@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-更新日期：2026-11-07。
+更新日期：2026-11-13。
 
 civ2agent 让程序像人一样玩《席德·梅尔的文明 II》多人黄金版：只走游戏自己的菜单、按键和对话框。一个小 DLL 注入 `civ2.exe`，在游戏的界面线程里执行命令，经本机命名管道回答。命令行不读进程内存，也不改游戏数据，只请游戏去做一次点击或按键会做的事。
 
@@ -39,22 +39,24 @@ civ2agent 让程序像人一样玩《席德·梅尔的文明 II》多人黄金�
 | `dashboard/` | 本机观察页，以及 `/mcp` 上的 MCP 网关。 |
 | `games/` | 各局的目录。不进 git。可用 `CIV2AGENT_GAMES_DIR` 换地方。 |
 | `game.example.json` | 安装路径的样例。复制成 `game.json`（不进 git）。 |
+| `.env.example` | 本地环境变量的样例。复制成 `.env`（不进 git）。 |
 
 ## 指定游戏位置
 
 本项目不必放在游戏目录里面。安装目录就是含有 `civ2.exe` 的那个目录，按这个顺序找：
 
-1. 环境变量 `CIV2AGENT_GAME`。
-2. 项目根目录的 `game.json`。从 `game.example.json` 复制，把 `game` 写成那个目录。相对路径相对项目根目录。
-3. 本项目的上一级目录，前提是那里已经有 `civ2.exe`。仓库还放在安装目录里时，不用设置。
+1. 已经设在进程里的环境变量 `CIV2AGENT_GAME`。
+2. 项目根目录的 `.env`。只填上还没设置的变量，所以盖不过第 1 条。从 `.env.example` 复制。相对路径相对项目根目录。
+3. 项目根目录的 `game.json`。从 `game.example.json` 复制，把 `game` 写成那个目录。相对路径相对项目根目录。
+4. 本项目的上一级目录，前提是那里已经有 `civ2.exe`。仓库还放在安装目录里时，不用设置。
 
-三条都找不到带 `civ2.exe` 的目录，启动会停下来并说明原因。
+都找不到带 `civ2.exe` 的目录，启动会停下来并说明原因。
 
 ```json
 { "game": "D:\\Games\\Civilization II" }
 ```
 
-`civ2session.py` 把决定好的目录传给启动器的 `--game`。单独运行启动器、又不写 `--game` 时，先看 `CIV2AGENT_GAME`，再从可执行文件向上找 `game.json`，然后同样向上找 `civ2.exe`。启动器里读 `game.json` 的逻辑在 `launch/main.cpp`。比这更早编译的启动器仍然接受 `--game`，`civ2session.py` 传的就是这个参数。
+`civ2session.py` 把决定好的目录传给启动器的 `--game`。单独运行启动器、又不写 `--game` 时，先看 `CIV2AGENT_GAME`，再从可执行文件向上找 `.env` 里的同一项，然后同样向上找 `game.json`，再向上找 `civ2.exe`。启动器里读这两个文件的逻辑在 `launch/main.cpp`。比这更早编译的启动器仍然接受 `--game`，`civ2session.py` 传的就是这个参数。读 `.env` 的那一版启动器要重新编译后才认这个文件。
 
 ## 编译
 
@@ -219,9 +221,11 @@ cd dashboard && npm test
 
 ## 环境变量
 
+项目根目录的 `.env` 会填上还没设置的变量。`CIV2AGENT_LEASE` 不从 `.env` 读，它只由观察页在一次调用上设置。
+
 | 变量 | 含义 |
 | --- | --- |
-| `CIV2AGENT_GAME` | 含有 `civ2.exe` 的目录。优先于 `game.json`。 |
+| `CIV2AGENT_GAME` | 含有 `civ2.exe` 的目录。进程里的值优先，然后是 `.env`，然后是 `game.json`。 |
 | `CIV2AGENT_GAMES_DIR` | 各局目录放在哪里。默认 `games/`。 |
 | `CIV2AGENT_PYTHON` | runner 和观察页用来跑命令行的 Python。 |
 | `CIV2AGENT_LEASE` | 观察页给自己拉起的命令带上，这样 `games/.lease` 还在时它们仍能用管道。 |

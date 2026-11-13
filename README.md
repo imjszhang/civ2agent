@@ -2,7 +2,7 @@
 
 [中文](README.zh-CN.md)
 
-Updated 2026-11-07.
+Updated 2026-11-13.
 
 civ2agent lets a program play *Sid Meier's Civilization II* Multiplayer Gold Edition the way a person does: through the game's own menus, keys, and dialogs. A small DLL is injected into `civ2.exe`. It runs each command on the game's interface thread and answers a local named pipe. The command line never reads process memory and never writes game data except by asking the game to do what a click or a key would do.
 
@@ -39,14 +39,16 @@ Memory layouts follow [FoxAhead/Civ2-UI-Additions](https://github.com/FoxAhead/C
 | `dashboard/` | Local observation page and an MCP gateway on `/mcp`. |
 | `games/` | Match folders. Not in git. Override with `CIV2AGENT_GAMES_DIR`. |
 | `game.example.json` | Template for the install path. Copy to `game.json` (not in git). |
+| `.env.example` | Template for local environment variables. Copy to `.env` (not in git). |
 
 ## Point it at the game
 
 The project does not have to sit inside the game directory. The install is the directory that contains `civ2.exe`, chosen in this order:
 
-1. The environment variable `CIV2AGENT_GAME`.
-2. `game.json` in the project root. Copy `game.example.json` and set `game` to that directory. A relative path is relative to the project root.
-3. The parent of this project, when that directory already contains `civ2.exe`. A checkout that still lives inside the install needs no setting.
+1. `CIV2AGENT_GAME` already set in the process environment.
+2. `.env` in the project root. It fills only variables that are not already set, so it does not win over step 1. Copy `.env.example`. A relative path is relative to the project root.
+3. `game.json` in the project root. Copy `game.example.json` and set `game` to that directory. A relative path is relative to the project root.
+4. The parent of this project, when that directory already contains `civ2.exe`. A checkout that still lives inside the install needs no setting.
 
 If none of these yields a directory with `civ2.exe`, startup stops and says so.
 
@@ -54,7 +56,7 @@ If none of these yields a directory with `civ2.exe`, startup stops and says so.
 { "game": "D:\\Games\\Civilization II" }
 ```
 
-`civ2session.py` passes the chosen directory to the launcher as `--game`. Running the launcher by itself, with no `--game`, uses `CIV2AGENT_GAME`, then a `game.json` found by walking up from the executable, then the same upward search for `civ2.exe`. The `game.json` walk in the launcher binary is in `launch/main.cpp`; a launcher built before that change still accepts `--game`, which is what `civ2session.py` sends.
+`civ2session.py` passes the chosen directory to the launcher as `--game`. Running the launcher by itself, with no `--game`, uses `CIV2AGENT_GAME`, then `CIV2AGENT_GAME` in a `.env` found by walking up from the executable, then a `game.json` found the same way, then the same upward search for `civ2.exe`. Both file walks in the launcher binary are in `launch/main.cpp`. A launcher built before a given file was added still accepts `--game`, which is what `civ2session.py` sends. The binary reads `.env` only after it is rebuilt.
 
 ## Build
 
@@ -219,9 +221,11 @@ cd dashboard && npm test
 
 ## Environment
 
+`.env` in the project root fills variables that are not already set. `CIV2AGENT_LEASE` is not read from `.env`; the dashboard sets it for one call.
+
 | Variable | Meaning |
 | --- | --- |
-| `CIV2AGENT_GAME` | Directory that contains `civ2.exe`. Wins over `game.json`. |
+| `CIV2AGENT_GAME` | Directory that contains `civ2.exe`. The process value wins, then `.env`, then `game.json`. |
 | `CIV2AGENT_GAMES_DIR` | Where match folders live. Default `games/`. |
 | `CIV2AGENT_PYTHON` | Python used by the runner and the dashboard. |
 | `CIV2AGENT_LEASE` | Set by the dashboard on its own commands so they may use the pipe while `games/.lease` is held. |

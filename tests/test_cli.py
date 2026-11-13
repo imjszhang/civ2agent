@@ -276,6 +276,14 @@ class GameRoot(unittest.TestCase):
         self.assertEqual(civ2ctl.game_root(), chosen)
         del os.environ["CIV2AGENT_GAME"]
         self.assertEqual(civ2ctl.game_root(), other)
+        dotenv = Path(self.tmp.name) / ".env"
+        dotenv.write_text(f"CIV2AGENT_GAME={chosen}\n", encoding="utf-8")
+        self.assertEqual(civ2ctl.load_dotenv(dotenv), ["CIV2AGENT_GAME"])
+        self.assertEqual(civ2ctl.game_root(), chosen)
+        self.assertEqual(civ2ctl.load_dotenv(dotenv), [])
+        os.environ["CIV2AGENT_GAME"] = str(other)
+        self.assertEqual(civ2ctl.game_root(), other)
+        del os.environ["CIV2AGENT_GAME"]
         cfg.write_text(json.dumps({"game": "missing"}), encoding="utf-8")
         with self.assertRaises(civ2ctl.GamePathError) as caught:
             civ2ctl.game_root()
@@ -289,6 +297,7 @@ class GameRoot(unittest.TestCase):
             with self.assertRaises(civ2ctl.GamePathError) as caught:
                 civ2ctl.game_root()
             self.assertIn("game.json", str(caught.exception))
+            self.assertIn(".env", str(caught.exception))
 
 
 class Lease(unittest.TestCase):
@@ -330,6 +339,58 @@ class Lease(unittest.TestCase):
         self.write(finished.pid)
         code, out = run_cli(["status", "--timeout", "0.2"])
         self.assertEqual(out[0]["error"], "not_connected")
+
+
+class DotEnv(unittest.TestCase):
+    KEYS = ("CIV2_DOTENV_EXPORT", "CIV2_DOTENV_PLAIN", "CIV2_DOTENV_SINGLE", "CIV2_DOTENV_QUOTED",
+            "CIV2_DOTENV_COMMENT", "CIV2_DOTENV_ESC", "CIV2_DOTENV_OPEN", "CIV2_DOTENV_KEEP", "CIV2AGENT_LEASE")
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.saved = {key: os.environ.get(key) for key in self.KEYS}
+        for key in self.KEYS:
+            os.environ.pop(key, None)
+        os.environ["CIV2_DOTENV_KEEP"] = "from-process"
+
+    def tearDown(self):
+        for key, value in self.saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        self.tmp.cleanup()
+
+    def test_quotes_comments_and_existing_values(self):
+        text = "\n".join([
+            "# comment",
+            "export CIV2_DOTENV_EXPORT=from-export",
+            "CIV2_DOTENV_PLAIN=D:\\Games\\Civilization II",
+            "CIV2_DOTENV_SINGLE='D:\\\\Games'",
+            'CIV2_DOTENV_QUOTED="D:\\\\civ2 games"',
+            "CIV2_DOTENV_COMMENT=4732 # port",
+            'CIV2_DOTENV_ESC="D:\\Games"',
+            "CIV2AGENT_LEASE=nope",
+            "CIV2_DOTENV_KEEP=from-file",
+            'CIV2_DOTENV_OPEN="nope',
+            "not a pair",
+            "=missing",
+        ])
+        file = Path(self.tmp.name) / ".env"
+        file.write_text(text, encoding="utf-8")
+        applied = civ2ctl.load_dotenv(file)
+        self.assertEqual(applied, ["CIV2_DOTENV_EXPORT", "CIV2_DOTENV_PLAIN", "CIV2_DOTENV_SINGLE",
+                                   "CIV2_DOTENV_QUOTED", "CIV2_DOTENV_COMMENT", "CIV2_DOTENV_ESC"])
+        self.assertEqual(os.environ["CIV2_DOTENV_EXPORT"], "from-export")
+        self.assertEqual(os.environ["CIV2_DOTENV_PLAIN"], "D:\\Games\\Civilization II")
+        self.assertEqual(os.environ["CIV2_DOTENV_SINGLE"], "D:\\\\Games")
+        self.assertEqual(os.environ["CIV2_DOTENV_QUOTED"], "D:\\civ2 games")
+        self.assertEqual(os.environ["CIV2_DOTENV_COMMENT"], "4732")
+        self.assertEqual(os.environ["CIV2_DOTENV_ESC"], "D:\\Games")
+        self.assertEqual(os.environ["CIV2_DOTENV_KEEP"], "from-process")
+        self.assertNotIn("CIV2AGENT_LEASE", os.environ)
+        self.assertNotIn("CIV2_DOTENV_OPEN", os.environ)
+        self.assertEqual(civ2ctl.load_dotenv(file), [])
+        self.assertEqual(civ2ctl.load_dotenv(Path(self.tmp.name) / "missing"), [])
 
 
 if __name__ == "__main__":

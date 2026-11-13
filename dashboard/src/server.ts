@@ -11,7 +11,7 @@ import { commandFromLog, earlierUsage, freshTail, latestEvents, piecesFromRuntim
 import { Gate, runMutation, whenIdle } from "./gate.js";
 import { listenLines } from "./lan.js";
 import { clearLease, writeLease } from "./lease.js";
-import { LEASE_COOKIE, PAGE_COOKIE, bindAllowed, cookieValue, createMcpHandler, pageAllowed, setCookie, type McpDeps } from "./mcp.js";
+import { LEASE_COOKIE, PAGE_COOKIE, PAGE_COOKIE_MAX_AGE, bindAllowed, cookieValue, createMcpHandler, pageAllowed, setCookie, type McpDeps } from "./mcp.js";
 import { actTimeoutMs, callArgs, loadPlayTools } from "./play.js";
 import { foldUsage, mergeRun, runChanged } from "./project.js";
 import { retainActions, retainCommands, retainThoughts } from "./retain.js";
@@ -87,6 +87,15 @@ function readRaw(req: IncomingMessage): Promise<string> {
   });
 }
 
+/** Same path and query, without the login token. A login URL returns to the page. */
+function withoutToken(url: URL): string {
+  const next = new URL(url);
+  next.searchParams.delete("token");
+  if (next.pathname === "/login") next.pathname = "/";
+  const query = next.searchParams.toString();
+  return `${next.pathname}${query ? `?${query}` : ""}`;
+}
+
 function loginToken(type: string | undefined, text: string): string {
   if ((type ?? "").includes("application/json")) {
     try {
@@ -110,7 +119,7 @@ function loginPage(wrong: boolean): string {
 <header><h1>civ2agent</h1></header>
 <main>
 <form method="post" action="/login" class="panel">
-<p>${wrong ? "口令不对。" : "输入令牌后才能看局面和操作。"}</p>
+<p>${wrong ? "口令不对。" : "输入一次令牌，或在网址上带 ?token=。这台浏览器会记住，下次打开直接进入。"}</p>
 <label>令牌 <input type="password" name="token" autofocus></label>
 <button type="submit">进入</button>
 </form>
@@ -548,6 +557,20 @@ export async function startDashboard(options: DashboardOptions): Promise<Running
   const server: Server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", `http://${options.host}`);
     if (url.pathname === "/mcp") { await mcp.handle(req, res); return; }
+    if (req.method === "GET" && options.token) {
+      const given = url.searchParams.get("token");
+      if (given) {
+        if (!pageAllowed(`Bearer ${given}`, undefined, options.token)) {
+          sendHtml(res, 401, loginPage(true));
+          return;
+        }
+        sendHtml(res, 302, "", {
+          location: withoutToken(url),
+          "set-cookie": setCookie(PAGE_COOKIE, options.token, PAGE_COOKIE_MAX_AGE),
+        });
+        return;
+      }
+    }
     if (url.pathname === "/login") {
       if (!options.token || (req.method === "GET" && allowed(req))) {
         res.writeHead(302, { location: "/" });
@@ -561,7 +584,7 @@ export async function startDashboard(options: DashboardOptions): Promise<Running
         sendHtml(res, 401, loginPage(true));
         return;
       }
-      sendHtml(res, 302, "", { location: "/", "set-cookie": setCookie(PAGE_COOKIE, options.token) });
+      sendHtml(res, 302, "", { location: "/", "set-cookie": setCookie(PAGE_COOKIE, options.token, PAGE_COOKIE_MAX_AGE) });
       return;
     }
     if (url.pathname === "/logout" && req.method === "POST") {

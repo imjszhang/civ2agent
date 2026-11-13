@@ -38,6 +38,8 @@ export function bearerOk(authorization: string | undefined, token: string): bool
 
 export const PAGE_COOKIE = "civ2agent";
 export const LEASE_COOKIE = "civ2agent_lease";
+/** How long the browser keeps a successful page login. */
+export const PAGE_COOKIE_MAX_AGE = 180 * 24 * 60 * 60;
 
 export function cookieValue(header: string | undefined, name: string): string {
   if (!header) return "";
@@ -63,10 +65,10 @@ export function pageAllowed(authorization: string | undefined, cookie: string | 
   return bearerOk(authorization, token) || secretOk(cookieValue(cookie, PAGE_COOKIE), token);
 }
 
-export function setCookie(name: string, value: string): string {
+export function setCookie(name: string, value: string, maxAge?: number): string {
   const body = value ? `${name}=${encodeURIComponent(value)}` : `${name}=`;
-  const maxAge = value ? "" : "; Max-Age=0";
-  return `${body}; HttpOnly; SameSite=Lax; Path=/${maxAge}`;
+  const lifetime = value ? (maxAge === undefined ? "" : `; Max-Age=${maxAge}`) : "; Max-Age=0";
+  return `${body}; HttpOnly; SameSite=Lax; Path=/${lifetime}`;
 }
 
 function asTool(value: CliResult) {

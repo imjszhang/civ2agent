@@ -7,8 +7,7 @@ import { fileURLToPath } from "node:url";
 import { runCli } from "../src/cli.js";
 import { Gate, runMutation, whenIdle } from "../src/gate.js";
 import { listenLines } from "../src/lan.js";
-import { bindAllowed } from "../src/mcp.js";
-import { inputShape } from "../src/mcp.js";
+import { PAGE_COOKIE_MAX_AGE, bindAllowed, inputShape } from "../src/mcp.js";
 import { needsLease, toolDescription, visiblePlayTools, type CtlTool } from "../src/play.js";
 import { openGame, resolveGameDir } from "../src/session.js";
 import { startDashboard, type DashboardOptions } from "../src/server.js";
@@ -198,6 +197,18 @@ else console.log(JSON.stringify({ ok: true, args }));
     assert.equal(login.status, 302);
     const pageCookie = pair(login, "civ2agent");
     assert.ok(pageCookie.startsWith("civ2agent="));
+    const stored = (typeof login.headers.getSetCookie === "function" ? login.headers.getSetCookie() : [])
+      .find(item => item.startsWith("civ2agent="));
+    assert.match(stored ?? "", new RegExp(`Max-Age=${PAGE_COOKIE_MAX_AGE}`));
+    const byUrl = await fetch(`${locked.url}/?token=secret&keep=1`, { redirect: "manual" });
+    assert.equal(byUrl.status, 302);
+    assert.equal(byUrl.headers.get("location"), "/?keep=1");
+    const urlCookie = (typeof byUrl.headers.getSetCookie === "function" ? byUrl.headers.getSetCookie() : [])
+      .find(item => item.startsWith("civ2agent="));
+    assert.match(urlCookie ?? "", new RegExp(`Max-Age=${PAGE_COOKIE_MAX_AGE}`));
+    const badUrl = await fetch(`${locked.url}/login?token=nope`, { redirect: "manual" });
+    assert.equal(badUrl.status, 401);
+    assert.match(await badUrl.text(), /口令不对/);
     const mcp = await post(locked.url, { cookie: pageCookie }, initialize());
     assert.equal(mcp.status, 401);
     const openEvents = await fetch(`${locked.url}/events`, { headers: { cookie: pageCookie } });

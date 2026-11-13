@@ -253,7 +253,7 @@ npm start
 
 地址是 `http://<这台机器的局域网地址>:4732/mcp`，端口用 `DASHBOARD_PORT`（默认 4732）。请求带 `Authorization: Bearer 令牌`。默认只听 `127.0.0.1`。要对局域网开放，把 `DASHBOARD_HOST` 设为 `0.0.0.0`，同时设置 `DASHBOARD_TOKEN`；没有令牌时进程不启动。只听本机且没有令牌时，本机客户端免令牌。监听通配地址时，启动日志列出本机回环和每个局域网 IPv4，页面和 MCP 各一行，不写令牌。防火墙要由这台机器自己放行该端口，程序不添加规则。
 
-页面和 `/events` 在设了令牌时要登录。`POST /login` 提交同一个令牌，成功后写 `HttpOnly`、`SameSite=Lax` 的 cookie。`GET /login` 是登录页。`POST /logout` 清掉 cookie。没有 cookie 也没有 Bearer 时，页面转到 `/login`，事件流和 `/play` 返回 401。`/mcp` 只认 Bearer，不认这枚 cookie。`app.js` 和 `app.css` 不含局面，不需要登录。
+页面和 `/events` 在设了令牌时要登录。`POST /login` 提交同一个令牌，成功后写 `HttpOnly`、`SameSite=Lax` 的 cookie，`Max-Age` 为 180 天，这台浏览器下次打开不用再输。`GET` 带查询参数 `token` 且与令牌一致时同样登录，并重定向到去掉该参数的地址。`GET /login` 是登录页。`POST /logout` 清掉 cookie。没有 cookie 也没有 Bearer 时，页面转到 `/login`，事件流和 `/play` 返回 401。`/mcp` 只认 Bearer，不认这枚 cookie。`app.js` 和 `app.css` 不含局面，不需要登录。
 
 观察页的主操作是开局：写下怎么开、可选攻略、局数（1 到 20）和每局回合（1 到 500），然后「开局并玩」。它在跑游戏的电脑上按这个次数启动 `civ2-play.mjs`，一局结束再开下一局。正在进行的局可以用「接着玩这一局」。`停下` 结束这次安排并交回租约。单步操作收在折叠里：回答当前对话框、结束回合、存盘、走一步、改产、设定税率。`via` 为 `mouse` 的对话框仍移动跑游戏这台电脑的鼠标，游戏窗口留在那块屏幕上。
 

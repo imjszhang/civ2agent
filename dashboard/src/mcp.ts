@@ -10,6 +10,8 @@ import { runCli } from "./cli.js";
 import { Gate, runMutation, whenIdle } from "./gate.js";
 import type { CtlTool, SchemaProp } from "./play.js";
 import { actTimeoutMs, callArgs, needsLease, toolDescription, visiblePlayTools } from "./play.js";
+import { packGame } from "./pack.js";
+import { readRecord } from "./record.js";
 import { CHECKPOINT_MS, SESSION_MS, closeArgs, openGame, resolveGameDir, runSession, sessionEnv, startArgs } from "./session.js";
 import type { GameView } from "./types.js";
 
@@ -185,6 +187,36 @@ export function createMcpServer(deps: McpDeps): McpServer {
     description: "观察页内存里的最新局面：连接、回合、年份、文明、对话框、城市窗口、税率窗口。不连管道。",
     inputSchema: {},
   }, async () => asTool(gameBrief(deps.readSnapshot(), deps.gate.activity())));
+
+  mcp.registerTool("read_record", {
+    description: "读取一局目录里的复盘材料，不连游戏，也不需要租约。part 默认 index。存档只列名字，不读 .SAV。log 是命令摘要，每次最多 100 行。",
+    inputSchema: {
+      id: z.string().describe("games 目录下的一层目录名"),
+      part: z.enum(["index", "turns", "notes", "strategy", "snapshot", "runs", "run", "log", "brief", "rule"]).optional()
+        .describe("index 目录，turns 每回合一行，notes 笔记，strategy 策略，snapshot 快照，runs 各段总结，run 一段的 result.json，log 命令摘要，brief 要求，rule 法则"),
+      turn: z.number().int().optional().describe("strategy 或 snapshot 的回合。不给 turn 时 strategy 读当前 strategy.md"),
+      run: z.string().optional().describe("runs 下的一段目录名"),
+      offset: z.number().int().optional().describe("turns 或 log 从第几行开始，从 0 计。不给则取末尾"),
+      limit: z.number().int().optional().describe("turns 最多 200 行，log 最多 100 行"),
+    },
+  }, async args => asTool(await readRecord(deps.gamesDir, args)));
+
+  mcp.registerTool("pack_game", {
+    description: "把一局打成复盘包。返回下载路径，用同一令牌 GET。不含开局前备份的用户文件。不需要租约。",
+    inputSchema: { id: z.string().describe("games 目录下的一层目录名") },
+  }, async args => {
+    const found = openGame(deps.gamesDir, args.id);
+    if (found.ok !== true) return asTool(found);
+    try {
+      const archive = await packGame(found.dir);
+      return asTool({
+        ok: true, id: args.id, files: archive.files, bytes: archive.bytes,
+        path: `/pack/${encodeURIComponent(args.id)}`,
+      });
+    } catch (cause) {
+      return asTool({ ok: false, error: "usage", reason: cause instanceof Error ? cause.message : "打不成包" });
+    }
+  });
 
   mcp.registerTool("start_game", {
     description: "按 spec 建一局并启动游戏、走完开局对话框。spec 的键与 civ2session 的 spec.json 相同。可能要数分钟。",

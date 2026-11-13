@@ -715,6 +715,38 @@ function onThought(data) {
   if (follow) thoughts.scrollTop = thoughts.scrollHeight;
 }
 
+const records = document.querySelector("#pack-list");
+const packNote = document.querySelector("#pack-note");
+
+async function loadRecords() {
+  const response = await fetch("/games");
+  if (!response.ok) { records.textContent = "记录读不了"; return; }
+  const body = await response.json();
+  records.replaceChildren();
+  for (const game of body.games ?? []) {
+    const row = document.createElement("p");
+    const link = document.createElement("a");
+    link.href = `/pack/${encodeURIComponent(game.id)}`;
+    link.textContent = "下载";
+    row.append(`${game.title || game.id} · ${game.status || ""} · 第 ${game.turn ?? "?"} 回合 `, link);
+    records.append(row);
+  }
+  if (!records.childElementCount) records.textContent = "还没有记录";
+}
+
+document.querySelector("#pack-upload").addEventListener("submit", async event => {
+  event.preventDefault();
+  const file = event.target.file.files[0];
+  if (!file) { packNote.textContent = "先选择一个包"; return; }
+  packNote.textContent = "正在上传";
+  const response = await fetch("/pack", { method: "POST", headers: { "content-type": "application/zip" }, body: file });
+  const body = await response.json();
+  packNote.textContent = body.ok ? `已放入 ${body.id}` : (body.reason || "没有放进去");
+  if (body.ok) loadRecords();
+});
+
+loadRecords();
+
 const source = new EventSource("/events");
 source.onopen = () => { link.textContent = "已连接观察页"; };
 source.onerror = () => { link.textContent = "观察页连接中断，正在重试"; };

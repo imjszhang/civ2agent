@@ -261,7 +261,7 @@ npm start
 
 管理工具：
 
-- `list_games`、`game_status`、`read_game`：不需要租约。`read_game` 是观察页内存里的局面（连接、回合、年份、文明、对话框、城市窗口、税率窗口），不连管道。`game_status` 和 `resume_game` 的 `id` 只能是 `games/` 下的一层目录名。
+- `list_games`、`game_status`、`read_game`、`read_record`、`pack_game`：不需要租约。`read_game` 是观察页内存里的局面（连接、回合、年份、文明、对话框、城市窗口、税率窗口），不连管道。`read_record` 读一局目录里的复盘材料，不连游戏。`part` 为 `index`（目录和各段摘要）、`turns`（每回合一行）、`notes`、`strategy`（当前或某一回合）、`snapshot`（某一回合的快照）、`runs`、`run`（一段的 `result.json`）、`log`（命令摘要）、`brief`、`rule`。存档只列名字。`log` 每次最多 100 行，不带完整局面。`pack_game` 返回下载路径。`GET /pack/<id>` 下载这一局的 zip，`POST /pack` 上传同一个格式的包，请求体就是 zip，`Content-Type` 为 `application/zip`。两条都要和页面一样登录。包是这一局的目录，不含 `backup/`。已经存在的局，以及正在进行的局，拒绝覆盖。`game_status`、`read_record`、`pack_game` 和 `resume_game` 的 `id` 只能是 `games/` 下的一层目录名。
 - `start_game`：`lease` 和 `spec`（对象，键与上面的 spec.json 相同），可选 `title`、`request`、`id`。交给 `civ2session.py new --spec`，可能要数分钟，开始时发一条进度「正在开局」。
 - `resume_game`、`checkpoint`、`close_game`：`close_game` 的 `status` 为 `paused` 或 `ended`，可选 `keep_running`。
 

@@ -86,6 +86,16 @@
         </div>
         <textarea id="rule-text" rows="14" aria-label="法则全文"></textarea>
       </div>
+      <h2 class="next">历史记录</h2>
+      <p class="hint">下载一局的复盘包，或把包上传回来。不含开局前替用户备份的存档。</p>
+      <div id="records" class="panel">
+        <form id="pack-upload" class="play-row">
+          <input type="file" name="file" accept=".zip,application/zip" aria-label="复盘包">
+          <button type="submit">上传</button>
+        </form>
+        <p id="pack-note"></p>
+        <div id="pack-list"></div>
+      </div>
       <h2 class="next">网关</h2>
       <div id="gateway" class="panel"></div>
       <h2 class="next">地图</h2>

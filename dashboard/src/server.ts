@@ -15,6 +15,7 @@ import { LEASE_COOKIE, PAGE_COOKIE, PAGE_COOKIE_MAX_AGE, bindAllowed, cookieValu
 import { actTimeoutMs, callArgs, loadPlayTools } from "./play.js";
 import { foldUsage, mergeRun, runChanged } from "./project.js";
 import { retainActions, retainCommands, retainThoughts } from "./retain.js";
+import { packGame, PACK_LIMIT, unpackGame } from "./pack.js";
 import { CHECKPOINT_MS, openGame, runSession, sessionEnv } from "./session.js";
 import type { GameView, GatewayView, Piece, Snapshot } from "./types.js";
 
@@ -74,15 +75,19 @@ function header(req: IncomingMessage, name: string): string | undefined {
 }
 
 function readRaw(req: IncomingMessage): Promise<string> {
+  return readBytes(req, 1_000_000).then(body => body.toString("utf8"));
+}
+
+function readBytes(req: IncomingMessage, limit: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
     req.on("data", (chunk: Buffer) => {
       size += chunk.length;
-      if (size > 1_000_000) { reject(new Error("请求太大")); req.destroy(); return; }
+      if (size > limit) { reject(new Error("请求太大")); req.destroy(); return; }
       chunks.push(chunk);
     });
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("end", () => resolve(Buffer.concat(chunks)));
     req.on("error", reject);
   });
 }
@@ -629,6 +634,43 @@ export async function startDashboard(options: DashboardOptions): Promise<Running
     if (url.pathname === "/play") {
       if (deny(req, res, false)) return;
       await handlePlay(req, res);
+      return;
+    }
+    if (url.pathname === "/games" && req.method === "GET") {
+      if (deny(req, res, false)) return;
+      const listed = await runSession(options.python, options.session, options.gamesDir, ["list"], 8000);
+      sendJson(res, listed.ok === true ? 200 : 400, listed);
+      return;
+    }
+    const packed = /^\/pack\/([^/]+)$/u.exec(url.pathname);
+    if (packed && req.method === "GET") {
+      if (deny(req, res, false)) return;
+      const found = openGame(options.gamesDir, decodeURIComponent(packed[1] ?? ""));
+      if (found.ok !== true) { sendJson(res, 400, found); return; }
+      try {
+        const archive = await packGame(found.dir);
+        const id = path.basename(found.dir);
+        res.writeHead(200, {
+          "content-type": "application/zip",
+          "content-disposition": `attachment; filename="${id}.zip"`,
+          "cache-control": "no-store",
+        });
+        res.end(archive.zip);
+      } catch (cause) {
+        sendJson(res, 400, { ok: false, error: "usage", reason: cause instanceof Error ? cause.message : "打不成包" });
+      }
+      return;
+    }
+    if (url.pathname === "/pack" && req.method === "POST") {
+      if (deny(req, res, false)) return;
+      try {
+        const body = await readBytes(req, PACK_LIMIT);
+        const active = await readActive(options.gamesDir);
+        const result = await unpackGame(options.gamesDir, body, active?.id ?? null);
+        sendJson(res, result.ok === true ? 200 : 400, result);
+      } catch (cause) {
+        sendJson(res, 400, { ok: false, error: "usage", reason: cause instanceof Error ? cause.message : "包读不了" });
+      }
       return;
     }
     if (url.pathname === "/rules" && req.method === "GET") {

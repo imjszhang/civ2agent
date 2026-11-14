@@ -873,7 +873,7 @@ async function loadRecords() {
     const tr = document.createElement("tr");
     if (item.id === chosen) tr.className = "picked";
     tr.addEventListener("click", event => {
-      if (event.target.closest("a")) return;
+      if (event.target.closest("a, button")) return;
       viewedId = item.id === (state.session?.id || "") ? "" : item.id;
       loadRecords();
       showReview();
@@ -890,6 +890,14 @@ async function loadRecords() {
     turn.className = "num";
     turn.textContent = item.turn ?? "?";
     const get = document.createElement("td");
+    get.className = "row-actions";
+    if (item.status !== "ended") {
+      const go = document.createElement("button");
+      go.type = "button";
+      go.textContent = "继续";
+      go.addEventListener("click", () => continueGame(item.id));
+      get.append(go);
+    }
     const link = document.createElement("a");
     link.href = `/pack/${encodeURIComponent(item.id)}`;
     link.textContent = "下载";
@@ -898,6 +906,17 @@ async function loadRecords() {
     el.append(tr);
   }
   records.append(el);
+}
+
+async function continueGame(id) {
+  const turns = Number(document.querySelector("#pack-turns").value);
+  if (!Number.isInteger(turns) || turns < 1 || turns > 500) {
+    packNote.textContent = "回合数是 1 到 500";
+    return;
+  }
+  packNote.textContent = `继续 ${id}，${turns} 回合`;
+  const result = await play({ op: "run", resume: id, turns });
+  packNote.textContent = result.playing || (result.ok ? `已开始，玩 ${turns} 回合` : (result.reason || "没有开始"));
 }
 
 document.querySelector("#pack-upload").addEventListener("submit", async event => {

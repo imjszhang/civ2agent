@@ -158,12 +158,15 @@
       <section class="block">
         <div class="head"><h2>历史记录</h2></div>
         <div id="records" class="panel">
-          <p class="hint">先点一局，再看上面的内容。下载不含开局前替用户备份的存档。</p>
-          <form id="pack-upload" class="fields">
-            <input type="file" name="file" accept=".zip,application/zip" aria-label="复盘包">
-            <button type="submit">上传</button>
+          <p class="hint">点一行，看上面的内容。继续会按填的回合数接着玩。</p>
+          <div class="fields">
+            <form id="pack-upload" class="fields">
+              <input type="file" name="file" accept=".zip,application/zip" aria-label="复盘包">
+              <button type="submit">上传</button>
+            </form>
+            <label>继续回合 <input id="pack-turns" inputmode="numeric" value="10" aria-label="继续回合"></label>
             <span id="pack-note"></span>
-          </form>
+          </div>
           <div id="pack-list"></div>
         </div>
       </section>

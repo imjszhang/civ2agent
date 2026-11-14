@@ -98,6 +98,7 @@ li { margin: 4px 0; }
 #map-detail { margin: 8px 0 0; min-height: 1.4em; }
 #pack-list { max-height: 360px; overflow: auto; }
 #pack-list td:nth-child(n+2) { white-space: nowrap; }
+.row-actions { display: flex; gap: 8px; align-items: center; }
 #pack-list .num, #pack-list th:nth-child(3) { text-align: right; font-variant-numeric: tabular-nums; }
 .state { padding: 0 6px; border-radius: 8px; font-size: 12px; background: #eee8dc; color: var(--muted); }
 .state.active { background: #e3f0e5; color: #2a6b3c; }

@@ -49,10 +49,10 @@
               </form>
             </div>
             <div id="play-live" hidden>
-              <p id="play-live-note" class="hint">这一局正在跑。开新局要先停下。</p>
+              <p id="play-live-note" class="hint"></p>
               <div class="buttons">
                 <button type="button" id="play-resume">接着玩这一局</button>
-                <button type="button" id="play-stop" class="danger">停下</button>
+                <button type="button" id="play-stop" class="danger" hidden>停下</button>
               </div>
             </div>
             <p id="play-note"></p>
@@ -88,16 +88,20 @@
           </div>
         </section>
         <section class="block">
-          <div class="head"><h2>局面</h2></div>
-          <div id="game" class="panel"></div>
-        </section>
-        <section class="block">
           <div class="head"><h2>地图</h2></div>
           <div id="map" class="panel map-panel">
             <p class="hint">已探索的格子。黄条是农田，蓝点是灌溉，黑点是矿山，白框是要塞，红点是污染，横线是道路或铁路。点一格看完整状态。</p>
             <canvas id="map-canvas"></canvas>
             <p id="map-detail">还没有探索到的格子</p>
           </div>
+        </section>
+        <section class="block">
+          <div class="head"><h2>局面</h2><span id="game-line" class="hint"></span></div>
+          <div id="game" class="panel"></div>
+          <details id="game-sheets">
+            <summary>城市、单位、外交</summary>
+            <div id="game-detail" class="panel"></div>
+          </details>
         </section>
       </div>
       <section id="agent" class="col">
@@ -109,17 +113,13 @@
             <pre id="prompt"></pre>
           </details>
         </div>
-        <div class="block">
-          <div class="head"><h3>思考</h3><span class="hint">只显示最近的记录</span></div>
-          <div id="thoughts" class="panel stream" data-empty="还没有思考记录"></div>
-        </div>
-        <div class="block">
-          <div class="head"><h3>行动</h3><span class="hint">只显示最近的记录</span></div>
-          <ol id="actions" class="panel stream" data-empty="还没有行动"></ol>
-        </div>
-        <div class="block">
-          <div class="head"><h3>命令</h3><span class="hint">只显示最近的记录</span></div>
-          <ol id="commands" class="panel stream" data-empty="还没有命令"></ol>
+        <div class="block feed-block">
+          <div class="tabs" role="tablist" aria-label="记录">
+            <button type="button" class="tab on" data-feed="thought" role="tab" aria-selected="true">思考</button>
+            <button type="button" class="tab" data-feed="action" role="tab" aria-selected="false">行动</button>
+            <button type="button" class="tab" data-feed="command" role="tab" aria-selected="false">命令</button>
+          </div>
+          <div id="feed" class="panel stream tab-pane" data-empty="还没有思考记录"></div>
         </div>
       </section>
     </div>
@@ -127,24 +127,38 @@
       <section class="block">
         <div class="head"><h2>这局的法则</h2><span id="rule-meta" class="hint">没有正在进行的局</span></div>
         <div id="rules" class="panel">
-          <p class="hint">改完保存后，上一份留在这一局。下一段 agent 读的是保存后的这一份。</p>
-          <div class="fields">
-            <label>已存版本
-              <select id="rule-version" aria-label="已存版本"><option value="">现在</option></select>
-            </label>
-            <label>换一套
-              <select id="rule-pick" aria-label="换一套法则"><option value="basic">基本</option></select>
-            </label>
-            <button type="button" id="rule-use">换上</button>
-            <button type="button" id="rule-save" class="primary">保存，留下上一版</button>
+          <div id="rule-edit">
+            <p id="rule-hint" class="hint">下面是现在生效的全文。保存后，下一段 agent 读这份，上一份自动留下。</p>
+            <textarea id="rule-text" rows="12" aria-label="法则全文"></textarea>
+            <div class="buttons">
+              <button type="button" id="rule-save" class="primary">保存修改</button>
+            </div>
+            <div class="fields">
+              <label>换成登记的一套
+                <select id="rule-pick" aria-label="换成登记的一套"><option value="basic">基本</option></select>
+              </label>
+              <button type="button" id="rule-use">换成这套</button>
+              <label>查看留下的版本
+                <select id="rule-version" aria-label="查看留下的版本"><option value="">现在</option></select>
+              </label>
+            </div>
           </div>
-          <textarea id="rule-text" rows="12" aria-label="法则全文"></textarea>
+          <div id="rule-view" hidden>
+            <h3>法则</h3>
+            <pre id="review-rule" class="stream"></pre>
+            <h3>笔记</h3>
+            <pre id="review-notes" class="stream"></pre>
+            <h3>策略</h3>
+            <pre id="review-strategy" class="stream"></pre>
+            <h3>回合</h3>
+            <div id="review-turns"></div>
+          </div>
         </div>
       </section>
       <section class="block">
         <div class="head"><h2>历史记录</h2></div>
         <div id="records" class="panel">
-          <p class="hint">下载一局的复盘包，或把包上传回来。不含开局前替用户备份的存档。</p>
+          <p class="hint">先点一局，再看上面的内容。下载不含开局前替用户备份的存档。</p>
           <form id="pack-upload" class="fields">
             <input type="file" name="file" accept=".zip,application/zip" aria-label="复盘包">
             <button type="submit">上传</button>

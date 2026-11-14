@@ -4,15 +4,15 @@ const playNote = document.querySelector("#play-note");
 const playDialog = document.querySelector("#play-dialog");
 const gateway = document.querySelector("#gateway");
 const game = document.querySelector("#game");
+const gameLine = document.querySelector("#game-line");
+const gameDetail = document.querySelector("#game-detail");
 const mapCanvas = document.querySelector("#map-canvas");
 const mapDetail = document.querySelector("#map-detail");
 const runBox = document.querySelector("#run");
 const prompt = document.querySelector("#prompt");
-const thoughts = document.querySelector("#thoughts");
-const actions = document.querySelector("#actions");
-const commands = document.querySelector("#commands");
+const feed = document.querySelector("#feed");
 
-const state = { game: null, gateway: null, session: null, run: null, earlier: null, prompt: "", thoughts: [], actions: [], commands: [] };
+const state = { game: null, gateway: null, session: null, run: null, earlier: null, prompt: "", thoughts: [], actions: [], commands: [], feed: [] };
 let holding = false;
 let dialogKey = "";
 
@@ -330,22 +330,33 @@ mapCanvas.addEventListener("mouseleave", () => {
 
 function renderGame() {
   game.replaceChildren();
+  gameDetail.replaceChildren();
   const view = state.game;
-  if (!view) return;
-  const status = document.createElement("p");
-  if (!view.connected) status.textContent = view.reason || "游戏没有开";
-  else if (view.busy) { status.className = "busy"; status.textContent = view.reason || "游戏正忙"; }
-  else status.textContent = view.inGame ? `第 ${view.turn ?? "—"} 回合，${yearText(view.year)}` : "已连接，不在对局中";
-  game.append(status);
-  if (!view.connected || !view.inGame) return;
+  if (!view) { gameLine.textContent = ""; return; }
+  if (!view.connected) {
+    gameLine.textContent = "";
+    const status = document.createElement("p");
+    status.textContent = view.reason || "游戏没有开";
+    game.append(status);
+    return;
+  }
+  if (view.busy) {
+    const status = document.createElement("p");
+    status.className = "busy";
+    status.textContent = view.reason || "游戏正忙";
+    game.append(status);
+  }
+  if (!view.inGame) {
+    gameLine.textContent = "已连接，不在对局中";
+    return;
+  }
   const civ = view.civ || {};
+  gameLine.textContent = `第 ${view.turn ?? "—"} 回合，${yearText(view.year)}　金钱 ${cell(civ.gold)}　研究 ${civ.research_name || "无"}　${cell(civ.beakers)} / ${cell(civ.research_cost)}`;
   const brief = document.createElement("p");
   const government = GOVERNMENT[civ.government] || "";
   const techs = Array.isArray(civ.techs) ? civ.techs.length : null;
-  brief.textContent = `${civ.name || ""} ${civ.leader || ""} ${civ.title || ""}　${government}　金钱 ${cell(civ.gold)}　税收 ${rate(civ.tax_rate)}　科学 ${rate(civ.science_rate)}　奢侈 ${rate(civ.lux_rate)}${techs === null ? "" : `　科技 ${techs}`}`;
-  const research = document.createElement("p");
-  research.textContent = `研究 ${civ.research_name || "无"}　${cell(civ.beakers)} / ${cell(civ.research_cost)}`;
-  game.append(brief, research);
+  brief.textContent = `${civ.name || ""} ${civ.leader || ""} ${civ.title || ""}　${government}　税收 ${rate(civ.tax_rate)}　科学 ${rate(civ.science_rate)}　奢侈 ${rate(civ.lux_rate)}${techs === null ? "" : `　科技 ${techs}`}`;
+  game.append(brief);
   if (view.notice && (view.notice.title || view.notice.text)) {
     const note = document.createElement("p");
     note.textContent = `${view.notice.title || "提示"}　${view.notice.text || ""}`;
@@ -376,14 +387,14 @@ function renderGame() {
     }
     game.append(box);
   }
-  if (view.cities.length) game.append(table(["城市", "人口", "粮", "盾", "建筑", "生产"], view.cities, city => [city.name, city.size, city.food, city.shields, builtCount(city.improvements), city.building_name]));
-  if (view.units.length) game.append(table(["单位", "位置", "移动", "状态"], view.units, unit => [
+  if (view.cities.length) gameDetail.append(table(["城市", "人口", "粮", "盾", "建筑", "生产"], view.cities, city => [city.name, city.size, city.food, city.shields, builtCount(city.improvements), city.building_name]));
+  if (view.units.length) gameDetail.append(table(["单位", "位置", "移动", "状态"], view.units, unit => [
     unit.index === view.activeUnit ? `▶ ${unit.name || ""}` : unit.name,
     `${unit.x},${unit.y}`,
     movesText(unit.moves_left, view.moveUnit),
     unitBits(unit, view, unit.index === view.activeUnit).join(" "),
   ]));
-  if (view.diplomacy.length) game.append(table(["文明", "状态", "使馆"], view.diplomacy, row => [row.name || row.civ, row.status, row.embassy ? "有" : "无"]));
+  if (view.diplomacy.length) gameDetail.append(table(["文明", "状态", "使馆"], view.diplomacy, row => [row.name || row.civ, row.status, row.embassy ? "有" : "无"]));
 }
 
 function effortText(value) {
@@ -480,33 +491,64 @@ function thoughtNode(thought) {
 function actionNode(action) {
   const li = document.createElement("li");
   li.className = action.kind === "tool" ? "tool" : "";
-  li.textContent = action.text;
+  const text = document.createElement("span");
+  text.textContent = action.text;
+  li.append(text);
   return li;
 }
 
 function commandNode(command) {
   const li = document.createElement("li");
-  li.className = command.ok ? "command ok" : "command bad";
-  li.textContent = `${command.time.slice(11, 19)} ${command.command}${command.ok ? "" : "　" + (command.reason || command.error)}`;
+  li.className = command.ok ? "command ok feed-line" : "command bad feed-line";
+  const time = document.createElement("time");
+  time.textContent = command.time.slice(11, 19);
+  const text = document.createElement("span");
+  text.textContent = `${command.command}${command.ok ? "" : "　" + (command.reason || command.error || "")}`;
+  li.append(time, text);
   return li;
 }
 
-function renderThoughts() {
-  thoughts.replaceChildren();
-  for (const thought of state.thoughts) thoughts.append(thoughtNode(thought));
-  thoughts.scrollTop = thoughts.scrollHeight;
+const FEED_EMPTY = { thought: "还没有思考记录", action: "还没有行动", command: "还没有命令" };
+let feedKind = "thought";
+
+function feedShown(kind) {
+  return kind === feedKind;
 }
 
-function renderActions() {
-  actions.replaceChildren();
-  for (const action of state.actions) actions.append(actionNode(action));
-  actions.scrollTop = actions.scrollHeight;
+function trimFeed() {
+  const thoughts = new Set(state.thoughts);
+  const actions = new Set(state.actions);
+  const commands = new Set(state.commands);
+  state.feed = state.feed.filter(entry => {
+    if (entry.kind === "thought") return thoughts.has(entry.item);
+    if (entry.kind === "action") return actions.has(entry.item);
+    return commands.has(entry.item);
+  });
 }
 
-function renderCommands() {
-  commands.replaceChildren();
-  for (const command of state.commands) commands.append(commandNode(command));
-  commands.scrollTop = commands.scrollHeight;
+function renderFeed() {
+  const follow = nearEnd(feed);
+  feed.replaceChildren();
+  for (const entry of state.feed) {
+    if (!feedShown(entry.kind)) continue;
+    if (entry.kind === "thought") feed.append(thoughtNode(entry.item));
+    else if (entry.kind === "action") feed.append(actionNode(entry.item));
+    else feed.append(commandNode(entry.item));
+  }
+  if (follow) feed.scrollTop = feed.scrollHeight;
+}
+
+for (const tab of document.querySelectorAll(".tab")) {
+  tab.addEventListener("click", () => {
+    feedKind = tab.dataset.feed;
+    for (const item of document.querySelectorAll(".tab")) {
+      const on = item === tab;
+      item.classList.toggle("on", on);
+      item.setAttribute("aria-selected", on ? "true" : "false");
+    }
+    feed.dataset.empty = FEED_EMPTY[feedKind] || "还没有记录";
+    renderFeed();
+  });
 }
 
 function numberField(form, name) {
@@ -519,24 +561,26 @@ const playLive = document.querySelector("#play-live");
 const playLiveNote = document.querySelector("#play-live-note");
 const playSteps = document.querySelector("#play-steps");
 
-function gameLive() {
+function playMode() {
   const view = state.gateway;
-  if (view?.playing || view?.command) return true;
-  const status = state.session?.status;
-  return status === "active" || status === "running" || status === "starting";
+  if (view?.playing || view?.command) return "running";
+  if (state.session?.id) return "held";
+  return "idle";
 }
 
 function renderPlayMode() {
-  const live = gameLive();
-  playIdle.hidden = live;
-  playLive.hidden = !live;
-  playSteps.hidden = !live;
-  if (!live) playSteps.open = false;
-  if (live) {
-    const title = state.session?.title;
-    playLiveNote.textContent = title
-      ? `正在跑「${title}」。开新局要先停下。`
-      : "这一局正在跑。开新局要先停下。";
+  const mode = playMode();
+  const title = state.session?.title;
+  playIdle.hidden = mode !== "idle";
+  playLive.hidden = mode === "idle";
+  document.querySelector("#play-resume").hidden = mode !== "held";
+  document.querySelector("#play-stop").hidden = mode !== "running";
+  playSteps.hidden = mode !== "held";
+  if (mode !== "held") playSteps.open = false;
+  if (mode === "held") {
+    playLiveNote.textContent = title ? `「${title}」还锁着。可以接着玩。` : "这一局还锁着。可以接着玩。";
+  } else if (mode === "running") {
+    playLiveNote.textContent = title ? `正在跑「${title}」。开新局要先停下。` : "这一局正在跑。开新局要先停下。";
   }
 }
 
@@ -665,17 +709,43 @@ async function loadRules() {
   await loadRule();
 }
 
+let ruleFor;
+let ruleTicket = 0;
+function syncRule() {
+  const id = state.session?.id || "";
+  if (id === ruleFor) return;
+  ruleFor = id;
+  loadRule();
+}
+
 async function loadRule(version) {
+  const ticket = ++ruleTicket;
   const query = version ? `?version=${encodeURIComponent(version)}` : "";
   const result = await fetch(`/rule${query}`).then(response => response.json()).catch(() => ({ ok: false }));
+  if (ticket !== ruleTicket) return;
   if (!result.ok) {
-    ruleMeta.textContent = result.reason || "没有正在进行的局";
+    ruleText.readOnly = false;
+    document.querySelector("#rule-save").disabled = false;
+    document.querySelector("#rule-use").disabled = false;
+    rulePick.disabled = false;
+    ruleMeta.textContent = result.reason || (state.session?.id ? "法则读不了" : "没有正在进行的局");
+    if (!version) ruleText.value = "";
     return;
   }
   ruleText.value = result.text || "";
-  const label = result.version ? `正在看第 ${result.version} 版` : "正在看现在的法则";
+  const archived = Boolean(result.version);
+  ruleText.readOnly = archived;
+  document.querySelector("#rule-save").disabled = archived;
+  document.querySelector("#rule-use").disabled = archived;
+  rulePick.disabled = archived;
   const count = Array.isArray(result.versions) ? result.versions.length : 0;
-  ruleMeta.textContent = `${label}。这一局已留下 ${count} 版。`;
+  if (archived) {
+    ruleMeta.textContent = `正在看留下的第 ${result.version} 版，只读。这一局已留下 ${count} 版。`;
+    document.querySelector("#rule-hint").textContent = "这是留档，不能在这里改。要回到现在生效的全文，把「查看留下的版本」选回「现在」。";
+  } else {
+    ruleMeta.textContent = count ? `正在看现在生效的法则。这一局已留下 ${count} 版。` : "正在看现在生效的法则。还没有留档。";
+    document.querySelector("#rule-hint").textContent = "下面是现在生效的全文。保存后，下一段 agent 读这份，上一份自动留下。";
+  }
   const chosen = ruleVersion.value;
   ruleVersion.replaceChildren();
   const now = document.createElement("option");
@@ -719,34 +789,76 @@ function renderAll() {
   renderPlayDialog();
   renderRun();
   prompt.textContent = state.prompt;
-  renderThoughts();
-  renderActions();
-  renderCommands();
+  renderFeed();
 }
 
 function onThought(data) {
-  const follow = nearEnd(thoughts);
   const last = state.thoughts.at(-1);
-  const node = thoughts.lastElementChild;
   if (data.done) {
     if (last) last.done = true;
-    if (node) node.className = "thought";
-  } else if (last && !last.done && node) {
+  } else if (last && !last.done) {
     last.text = keepText(last.text + data.text);
-    node.textContent = last.text;
   } else {
     const thought = { text: keepText(data.text), done: false };
     state.thoughts.push(thought);
+    state.feed.push({ kind: "thought", item: thought });
     if (state.thoughts.length > KEEP_THOUGHTS) state.thoughts.shift();
-    thoughts.append(thoughtNode(thought));
-    trimChildren(thoughts, KEEP_THOUGHTS);
+    trimFeed();
   }
-  if (follow) thoughts.scrollTop = thoughts.scrollHeight;
+  renderFeed();
 }
 
 const records = document.querySelector("#pack-list");
-const GAME_STATUS = { paused: "已暂停", ended: "已结束", running: "进行中" };
+const GAME_STATUS = { paused: "已暂停", ended: "已结束", running: "进行中", starting: "开局中", active: "进行中" };
 const packNote = document.querySelector("#pack-note");
+const ruleEdit = document.querySelector("#rule-edit");
+const ruleView = document.querySelector("#rule-view");
+let viewedId = "";
+let listedFor;
+
+function editingActive() {
+  const active = state.session?.id || "";
+  return !viewedId || viewedId === active;
+}
+
+function syncRecords() {
+  const id = state.session?.id || "";
+  if (id === listedFor) return;
+  listedFor = id;
+  loadRecords();
+}
+
+async function recordPart(id, part) {
+  const response = await fetch(`/record?id=${encodeURIComponent(id)}&part=${part}`);
+  return response.json();
+}
+
+async function showReview() {
+  const editing = editingActive();
+  ruleEdit.hidden = !editing;
+  ruleView.hidden = editing;
+  if (editing) {
+    const id = state.session?.id || "";
+    if (id !== ruleFor) {
+      ruleFor = id;
+      loadRule();
+    }
+    return;
+  }
+  ruleMeta.textContent = "只读";
+  const id = viewedId;
+  const [rule, notes, strategy, turns] = await Promise.all([
+    recordPart(id, "rule"), recordPart(id, "notes"), recordPart(id, "strategy"), recordPart(id, "turns"),
+  ]);
+  document.querySelector("#review-rule").textContent = rule.ok ? (rule.rule || "") : (rule.reason || "");
+  document.querySelector("#review-notes").textContent = notes.ok ? (notes.notes || "") : (notes.reason || "");
+  document.querySelector("#review-strategy").textContent = strategy.ok ? (strategy.strategy || "") : (strategy.reason || "");
+  const box = document.querySelector("#review-turns");
+  box.replaceChildren();
+  if (turns.ok && Array.isArray(turns.rows) && turns.rows.length) {
+    box.append(table(["回合", "年份", "金钱"], turns.rows, item => [item.turn, yearText(item.year), item.gold]));
+  }
+}
 
 async function loadRecords() {
   const response = await fetch("/games");
@@ -755,23 +867,31 @@ async function loadRecords() {
   records.replaceChildren();
   const games = body.games ?? [];
   if (!games.length) { records.textContent = "还没有记录"; return; }
+  const chosen = viewedId || state.session?.id || "";
   const el = table(["这一局", "状态", "回合", ""], [], () => []);
-  for (const game of games) {
+  for (const item of games) {
     const tr = document.createElement("tr");
+    if (item.id === chosen) tr.className = "picked";
+    tr.addEventListener("click", event => {
+      if (event.target.closest("a")) return;
+      viewedId = item.id === (state.session?.id || "") ? "" : item.id;
+      loadRecords();
+      showReview();
+    });
     const name = document.createElement("td");
-    name.textContent = game.title || game.id;
-    name.title = game.id;
+    name.textContent = item.title || item.id;
+    name.title = item.id;
     const status = document.createElement("td");
     const tag = document.createElement("span");
-    tag.className = game.active ? "state active" : "state";
-    tag.textContent = game.active ? "正在玩" : (GAME_STATUS[game.status] || game.status || "—");
+    tag.className = item.active ? "state active" : "state";
+    tag.textContent = item.active ? "正在玩" : (GAME_STATUS[item.status] || item.status || "—");
     status.append(tag);
     const turn = document.createElement("td");
     turn.className = "num";
-    turn.textContent = game.turn ?? "?";
+    turn.textContent = item.turn ?? "?";
     const get = document.createElement("td");
     const link = document.createElement("a");
-    link.href = `/pack/${encodeURIComponent(game.id)}`;
+    link.href = `/pack/${encodeURIComponent(item.id)}`;
     link.textContent = "下载";
     get.append(link);
     tr.append(name, status, turn, get);
@@ -798,34 +918,43 @@ source.onopen = () => { link.textContent = "已连接观察页"; };
 source.onerror = () => { link.textContent = "观察页连接中断，正在重试"; };
 source.addEventListener("snapshot", event => {
   Object.assign(state, JSON.parse(event.data));
+  state.feed = [
+    ...state.thoughts.map(item => ({ kind: "thought", item })),
+    ...state.actions.map(item => ({ kind: "action", item })),
+    ...state.commands.map(item => ({ kind: "command", item })),
+  ];
   renderAll();
+  syncRecords();
+  showReview();
 });
-source.addEventListener("gateway", event => { state.gateway = JSON.parse(event.data); renderGateway(); });
+source.addEventListener("gateway", event => { state.gateway = JSON.parse(event.data); renderGateway(); renderPlayMode(); });
 source.addEventListener("game", event => { state.game = JSON.parse(event.data); renderMap(); renderGame(); });
-source.addEventListener("session", event => { state.session = JSON.parse(event.data); renderRun(); });
+source.addEventListener("session", event => { state.session = JSON.parse(event.data); renderRun(); renderPlayMode(); syncRecords(); showReview(); });
 source.addEventListener("run", event => { state.run = JSON.parse(event.data); renderRun(); });
 source.addEventListener("prompt", event => { if (!state.prompt) { state.prompt = JSON.parse(event.data).text; prompt.textContent = state.prompt; } });
 source.addEventListener("thought", event => onThought(JSON.parse(event.data)));
 source.addEventListener("action", event => {
-  const follow = nearEnd(actions);
-  state.actions.push(JSON.parse(event.data));
+  const item = JSON.parse(event.data);
+  state.actions.push(item);
+  state.feed.push({ kind: "action", item });
   if (state.actions.length > KEEP_ACTIONS) state.actions.shift();
-  actions.append(actionNode(state.actions.at(-1)));
-  trimChildren(actions, KEEP_ACTIONS);
-  if (follow) actions.scrollTop = actions.scrollHeight;
+  trimFeed();
+  renderFeed();
 });
 source.addEventListener("command", event => {
-  const follow = nearEnd(commands);
-  state.commands.push(JSON.parse(event.data));
+  const item = JSON.parse(event.data);
+  state.commands.push(item);
+  state.feed.push({ kind: "command", item });
   if (state.commands.length > KEEP_COMMANDS) state.commands.shift();
-  commands.append(commandNode(state.commands.at(-1)));
-  trimChildren(commands, KEEP_COMMANDS);
-  if (follow) commands.scrollTop = commands.scrollHeight;
+  trimFeed();
+  renderFeed();
 });
 source.addEventListener("earlier", event => { state.earlier = JSON.parse(event.data); renderRun(); });
 source.addEventListener("reset", event => {
   const scope = JSON.parse(event.data).scope;
-  state.run = null; state.prompt = ""; state.thoughts = []; state.actions = [];
+  state.run = null; state.prompt = ""; state.thoughts = []; state.actions = []; state.feed = [];
   if (scope === "session") { state.commands = []; state.session = null; state.earlier = null; }
   renderAll();
+  syncRecords();
+  showReview();
 });

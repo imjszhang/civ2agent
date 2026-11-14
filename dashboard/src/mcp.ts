@@ -105,23 +105,131 @@ async function notify(extra: Extra, message: string) {
 
 function field(prop: SchemaProp): z.ZodType {
   if (prop.enum && prop.enum.length > 0) return z.enum(prop.enum as [string, ...string[]]);
-  if (prop.type === "integer" || prop.type === "number") return z.number();
+  if (prop.type === "integer") return z.number().int();
+  if (prop.type === "number") return z.number();
   if (prop.type === "boolean") return z.boolean();
   if (prop.type === "array") return z.array(z.string());
+  if (prop.type === "object") return z.record(z.string(), z.unknown());
   return z.string();
 }
 
-export function inputShape(tool: CtlTool): Record<string, z.ZodType> {
-  const required = new Set(tool.input_schema.required ?? []);
+export function shapeFrom(schema: { properties?: Record<string, SchemaProp>; required?: string[] }): Record<string, z.ZodType> {
+  const required = new Set(schema.required ?? []);
   const shape: Record<string, z.ZodType> = {};
-  for (const [name, prop] of Object.entries(tool.input_schema.properties ?? {})) {
+  for (const [name, prop] of Object.entries(schema.properties ?? {})) {
     let entry = field(prop);
     if (prop.description) entry = entry.describe(prop.description);
     if (!required.has(name)) entry = entry.optional();
     shape[name] = entry;
   }
+  return shape;
+}
+
+export function inputShape(tool: CtlTool): Record<string, z.ZodType> {
+  const shape = shapeFrom(tool.input_schema);
   if (needsLease(tool)) shape.lease = z.string().describe("claim 返回的租约");
   return shape;
+}
+
+const LEASE_PROP: SchemaProp = { type: "string", description: "claim 返回的租约" };
+
+export type McpToolDoc = {
+  name: string;
+  description: string;
+  /** 这一调用会改局面，或取走事件队列，所以必须先 claim。 */
+  lease: boolean;
+  input_schema: {
+    type: "object";
+    properties: Record<string, SchemaProp>;
+    required: string[];
+  };
+};
+
+function toolDoc(name: string, description: string, lease: boolean, properties: Record<string, SchemaProp>, required: string[]): McpToolDoc {
+  return { name, description, lease, input_schema: { type: "object", properties, required } };
+}
+
+/** Session tools. Play tools are appended from civ2ctl at startup. */
+export function sessionTools(): McpToolDoc[] {
+  return [
+    toolDoc("claim", "领取这台机器上的游戏租约。变更工具都要带返回的 lease。同一 client 再次调用时交还它已经持有的那把。别人持有且没有命令在执行、游戏也没在跑时，接过空闲租约；否则返回 busy，并带上 holder 和当前 lease。", false, {
+      client: { type: "string", description: "调用方的名字，显示在观察页上" },
+    }, ["client"]),
+    toolDoc("release", "交回租约。有命令在跑时返回 busy。没有命令在跑时，可以不带 lease，改用 client 交回持有者自己的那把。", false, {
+      lease: { type: "string", description: "claim 返回的租约" },
+      client: { type: "string", description: "持有者名字。没有命令在跑、又没有 lease 时用来交回" },
+    }, []),
+    toolDoc("list_games", "列出 games 目录里的全部游戏局。", false, {}, []),
+    toolDoc("game_status", "一局的状态。不给 id 时是进行中的那局。", false, {
+      id: { type: "string", description: "games 目录下的一层目录名" },
+    }, []),
+    toolDoc("read_game", "观察页内存里的最新局面：连接、回合、年份、文明、对话框、城市窗口、税率窗口。不连管道。", false, {}, []),
+    toolDoc("read_record", "读取一局目录里的复盘材料，不连游戏，也不需要租约。part 默认 index。存档只列名字，不读 .SAV。log 是命令摘要，每次最多 100 行。", false, {
+      id: { type: "string", description: "games 目录下的一层目录名" },
+      part: {
+        type: "string",
+        enum: ["index", "turns", "notes", "strategy", "snapshot", "runs", "run", "log", "brief", "rule"],
+        description: "index 目录，turns 每回合一行，notes 笔记，strategy 策略，snapshot 快照，runs 各段总结，run 一段的 result.json，log 命令摘要，brief 要求，rule 法则",
+      },
+      turn: { type: "integer", description: "strategy 或 snapshot 的回合。不给 turn 时 strategy 读当前 strategy.md" },
+      run: { type: "string", description: "runs 下的一段目录名" },
+      offset: { type: "integer", description: "turns 或 log 从第几行开始，从 0 计。不给则取末尾" },
+      limit: { type: "integer", description: "turns 最多 200 行，log 最多 100 行" },
+    }, ["id"]),
+    toolDoc("pack_game", "把一局打成复盘包。返回下载路径，用同一令牌 GET。不含开局前备份的用户文件。不需要租约。", false, {
+      id: { type: "string", description: "games 目录下的一层目录名" },
+    }, ["id"]),
+    toolDoc("start_game", "按 spec 建一局并启动游戏、走完开局对话框。spec 的键与 civ2session 的 spec.json 相同。可能要数分钟。", true, {
+      lease: LEASE_PROP,
+      spec: { type: "object", description: "开局设置" },
+      title: { type: "string", description: "这局的名字" },
+      request: { type: "string", description: "用户的原话，记进 brief.md" },
+      id: { type: "string", description: "目录名里的英文标识" },
+    }, ["lease", "spec"]),
+    toolDoc("resume_game", "从一局的目录接着玩：启动游戏，读最新的存档。id 是 games 下的一层目录名。", true, {
+      lease: LEASE_PROP,
+      id: { type: "string", description: "games 目录下的一层目录名" },
+    }, ["lease", "id"]),
+    toolDoc("checkpoint", "存盘点：存这一回合、记一行。回合开始、没有对话框也没有城市窗口时调用，每回合一次。", true, {
+      lease: LEASE_PROP,
+    }, ["lease"]),
+    toolDoc("close_game", "收尾：存盘点，离开并退出游戏，恢复用户的文件，解锁。status 为 paused 或 ended。", true, {
+      lease: LEASE_PROP,
+      status: { type: "string", enum: ["paused", "ended"], description: "paused 暂停，ended 这局已经结束" },
+      keep_running: { type: "boolean", description: "不退出游戏（用户的 CIV2.DAT、HALLFAME.DAT 不恢复）" },
+    }, ["lease"]),
+  ];
+}
+
+/** Every tool registered on /mcp, including the civ2ctl play tools loaded at startup. */
+export function mcpTools(playTools: CtlTool[]): McpToolDoc[] {
+  const play = visiblePlayTools(playTools).map((tool): McpToolDoc => {
+    const properties = { ...(tool.input_schema.properties ?? {}) };
+    const required = [...(tool.input_schema.required ?? [])];
+    const lease = needsLease(tool);
+    if (lease && !required.includes("lease")) {
+      properties.lease = LEASE_PROP;
+      required.push("lease");
+    }
+    return toolDoc(tool.name, toolDescription(tool), lease, properties, required);
+  });
+  return [...sessionTools(), ...play];
+}
+
+function text(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function optText(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function optInt(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) ? value : undefined;
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 function leaseOf(args: Record<string, unknown>): string {
@@ -138,41 +246,38 @@ export function createMcpServer(deps: McpDeps): McpServer {
   const mutate = (command: string, lease: string, run: () => Promise<CliResult>) =>
     runMutation(deps.gate, command, lease, run, deps.onActivity);
 
-  mcp.registerTool("claim", {
-    description: "领取这台机器上的游戏租约。变更工具都要带返回的 lease。同一 client 再次调用时交还它已经持有的那把。别人持有且没有命令在执行、游戏也没在跑时，接过空闲租约；否则返回 busy，并带上 holder 和当前 lease。",
-    inputSchema: { client: z.string().describe("调用方的名字，显示在观察页上") },
-  }, async args => {
-    if (deps.gate.holderName() !== args.client.trim() && deps.gameDown()) deps.gate.releaseIdle();
-    const result = deps.gate.claim(args.client);
+  const documented = new Map(sessionTools().map(tool => [tool.name, tool]));
+  const on = (name: string, handler: (args: Record<string, unknown>, extra: Extra) => Promise<ReturnType<typeof asTool>>) => {
+    const tool = documented.get(name);
+    if (!tool) throw new Error(`没有 MCP 工具 ${name}`);
+    mcp.registerTool(name, {
+      description: tool.description,
+      inputSchema: shapeFrom(tool.input_schema),
+    }, handler);
+  };
+
+  on("claim", async args => {
+    const client = text(args.client);
+    if (deps.gate.holderName() !== client.trim() && deps.gameDown()) deps.gate.releaseIdle();
+    const result = deps.gate.claim(client);
     deps.onActivity();
     return asTool(result);
   });
 
-  mcp.registerTool("release", {
-    description: "交回租约。有命令在跑时返回 busy。没有命令在跑时，可以不带 lease，改用 client 交回持有者自己的那把。",
-    inputSchema: {
-      lease: z.string().optional().describe("claim 返回的租约"),
-      client: z.string().optional().describe("持有者名字。没有命令在跑、又没有 lease 时用来交回"),
-    },
-  }, async args => {
-    const lease = args.lease?.trim() ?? "";
-    const result = lease ? deps.gate.release(lease) : deps.gate.releaseNamed(args.client ?? "");
+  on("release", async args => {
+    const lease = text(args.lease).trim();
+    const result = lease ? deps.gate.release(lease) : deps.gate.releaseNamed(text(args.client));
     deps.onActivity();
     return asTool(result);
   });
 
-  mcp.registerTool("list_games", {
-    description: "列出 games 目录里的全部游戏局。",
-    inputSchema: {},
-  }, async () => asTool(await session(["list"], 8000)));
+  on("list_games", async () => asTool(await session(["list"], 8000)));
 
-  mcp.registerTool("game_status", {
-    description: "一局的状态。不给 id 时是进行中的那局。",
-    inputSchema: { id: z.string().optional().describe("games 目录下的一层目录名") },
-  }, async args => {
+  on("game_status", async args => {
     let argv = ["status"];
-    if (args.id) {
-      const found = openGame(deps.gamesDir, args.id);
+    const id = optText(args.id);
+    if (id) {
+      const found = openGame(deps.gamesDir, id);
       if (found.ok !== true) return asTool(found);
       argv = ["status", found.dir];
     }
@@ -183,95 +288,65 @@ export function createMcpServer(deps: McpDeps): McpServer {
     );
   });
 
-  mcp.registerTool("read_game", {
-    description: "观察页内存里的最新局面：连接、回合、年份、文明、对话框、城市窗口、税率窗口。不连管道。",
-    inputSchema: {},
-  }, async () => asTool(gameBrief(deps.readSnapshot(), deps.gate.activity())));
+  on("read_game", async () => asTool(gameBrief(deps.readSnapshot(), deps.gate.activity())));
 
-  mcp.registerTool("read_record", {
-    description: "读取一局目录里的复盘材料，不连游戏，也不需要租约。part 默认 index。存档只列名字，不读 .SAV。log 是命令摘要，每次最多 100 行。",
-    inputSchema: {
-      id: z.string().describe("games 目录下的一层目录名"),
-      part: z.enum(["index", "turns", "notes", "strategy", "snapshot", "runs", "run", "log", "brief", "rule"]).optional()
-        .describe("index 目录，turns 每回合一行，notes 笔记，strategy 策略，snapshot 快照，runs 各段总结，run 一段的 result.json，log 命令摘要，brief 要求，rule 法则"),
-      turn: z.number().int().optional().describe("strategy 或 snapshot 的回合。不给 turn 时 strategy 读当前 strategy.md"),
-      run: z.string().optional().describe("runs 下的一段目录名"),
-      offset: z.number().int().optional().describe("turns 或 log 从第几行开始，从 0 计。不给则取末尾"),
-      limit: z.number().int().optional().describe("turns 最多 200 行，log 最多 100 行"),
-    },
-  }, async args => asTool(await readRecord(deps.gamesDir, args)));
+  on("read_record", async args => asTool(await readRecord(deps.gamesDir, {
+    id: text(args.id),
+    part: optText(args.part),
+    turn: optInt(args.turn),
+    run: optText(args.run),
+    offset: optInt(args.offset),
+    limit: optInt(args.limit),
+  })));
 
-  mcp.registerTool("pack_game", {
-    description: "把一局打成复盘包。返回下载路径，用同一令牌 GET。不含开局前备份的用户文件。不需要租约。",
-    inputSchema: { id: z.string().describe("games 目录下的一层目录名") },
-  }, async args => {
-    const found = openGame(deps.gamesDir, args.id);
+  on("pack_game", async args => {
+    const id = text(args.id);
+    const found = openGame(deps.gamesDir, id);
     if (found.ok !== true) return asTool(found);
     try {
       const archive = await packGame(found.dir);
       return asTool({
-        ok: true, id: args.id, files: archive.files, bytes: archive.bytes,
-        path: `/pack/${encodeURIComponent(args.id)}`,
+        ok: true, id, files: archive.files, bytes: archive.bytes,
+        path: `/pack/${encodeURIComponent(id)}`,
       });
     } catch (cause) {
       return asTool({ ok: false, error: "usage", reason: cause instanceof Error ? cause.message : "打不成包" });
     }
   });
 
-  mcp.registerTool("start_game", {
-    description: "按 spec 建一局并启动游戏、走完开局对话框。spec 的键与 civ2session 的 spec.json 相同。可能要数分钟。",
-    inputSchema: {
-      lease: z.string().describe("claim 返回的租约"),
-      spec: z.record(z.string(), z.unknown()).describe("开局设置"),
-      title: z.string().optional().describe("这局的名字"),
-      request: z.string().optional().describe("用户的原话，记进 brief.md"),
-      id: z.string().optional().describe("目录名里的英文标识"),
-    },
-  }, async (args, extra) => {
-    if (args.id) {
-      const found = resolveGameDir(deps.gamesDir, args.id);
+  on("start_game", async (args, extra) => {
+    const id = optText(args.id);
+    if (id) {
+      const found = resolveGameDir(deps.gamesDir, id);
       if (found.ok !== true) return asTool(found);
     }
-    const result = await mutate("start_game", args.lease, async () => {
+    const result = await mutate("start_game", text(args.lease), async () => {
       await notify(extra, "正在开局");
-      return session(startArgs(args.spec, args.title, args.request, args.id), SESSION_MS);
+      return session(startArgs(recordValue(args.spec), optText(args.title), optText(args.request), id), SESSION_MS);
     });
     return asTool(result);
   });
 
-  mcp.registerTool("resume_game", {
-    description: "从一局的目录接着玩：启动游戏，读最新的存档。id 是 games 下的一层目录名。",
-    inputSchema: {
-      lease: z.string().describe("claim 返回的租约"),
-      id: z.string().describe("games 目录下的一层目录名"),
-    },
-  }, async args => {
-    const found = openGame(deps.gamesDir, args.id);
+  on("resume_game", async args => {
+    const found = openGame(deps.gamesDir, text(args.id));
     if (found.ok !== true) return asTool(found);
-    return asTool(await mutate("resume_game", args.lease, () => session(["resume", found.dir], SESSION_MS)));
+    return asTool(await mutate("resume_game", text(args.lease), () => session(["resume", found.dir], SESSION_MS)));
   });
 
-  mcp.registerTool("checkpoint", {
-    description: "存盘点：存这一回合、记一行。回合开始、没有对话框也没有城市窗口时调用，每回合一次。",
-    inputSchema: { lease: z.string().describe("claim 返回的租约") },
-  }, async args => asTool(await mutate("checkpoint", args.lease, () => session(["checkpoint"], CHECKPOINT_MS))));
+  on("checkpoint", async args => asTool(await mutate("checkpoint", text(args.lease), () => session(["checkpoint"], CHECKPOINT_MS))));
 
-  mcp.registerTool("close_game", {
-    description: "收尾：存盘点，离开并退出游戏，恢复用户的文件，解锁。status 为 paused 或 ended。",
-    inputSchema: {
-      lease: z.string().describe("claim 返回的租约"),
-      status: z.enum(["paused", "ended"]).optional().describe("paused 暂停，ended 这局已经结束"),
-      keep_running: z.boolean().optional().describe("不退出游戏（用户的 CIV2.DAT、HALLFAME.DAT 不恢复）"),
-    },
-  }, async args => asTool(await mutate("close_game", args.lease, () => session(
-    closeArgs(args.status ?? "paused", args.keep_running === true), SESSION_MS,
+  on("close_game", async args => asTool(await mutate("close_game", text(args.lease), () => session(
+    closeArgs(args.status === "ended" ? "ended" : "paused", args.keep_running === true), SESSION_MS,
   ))));
 
+  const playDocs = new Map(mcpTools(deps.playTools).map(tool => [tool.name, tool]));
   for (const tool of visiblePlayTools(deps.playTools)) {
-    const leased = needsLease(tool);
+    const doc = playDocs.get(tool.name);
+    if (!doc) continue;
+    const leased = doc.lease;
     mcp.registerTool(tool.name, {
-      description: toolDescription(tool),
-      inputSchema: inputShape(tool),
+      description: doc.description,
+      inputSchema: shapeFrom(doc.input_schema),
     }, async (args: Record<string, unknown>) => {
       if (!leased) {
         return whenIdle(

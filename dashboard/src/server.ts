@@ -11,11 +11,12 @@ import { commandFromLog, earlierUsage, freshTail, latestEvents, piecesFromRuntim
 import { Gate, runMutation, whenIdle } from "./gate.js";
 import { listenLines } from "./lan.js";
 import { clearLease, writeLease } from "./lease.js";
-import { LEASE_COOKIE, PAGE_COOKIE, PAGE_COOKIE_MAX_AGE, bindAllowed, cookieValue, createMcpHandler, pageAllowed, setCookie, type McpDeps } from "./mcp.js";
+import { LEASE_COOKIE, PAGE_COOKIE, PAGE_COOKIE_MAX_AGE, bindAllowed, cookieValue, createMcpHandler, mcpTools, pageAllowed, setCookie, type McpDeps } from "./mcp.js";
 import { actTimeoutMs, callArgs, loadPlayTools } from "./play.js";
 import { foldUsage, mergeRun, runChanged } from "./project.js";
 import { retainActions, retainCommands, retainThoughts } from "./retain.js";
 import { packGame, PACK_LIMIT, unpackGame } from "./pack.js";
+import { readRecord } from "./record.js";
 import { CHECKPOINT_MS, openGame, runSession, sessionEnv } from "./session.js";
 import type { GameView, GatewayView, Piece, Snapshot } from "./types.js";
 
@@ -606,6 +607,21 @@ export async function startDashboard(options: DashboardOptions): Promise<Running
       sendHtml(res, 302, "", { location: "/", "set-cookie": setCookie(PAGE_COOKIE, options.token, PAGE_COOKIE_MAX_AGE) });
       return;
     }
+    if (url.pathname === "/tools") {
+      if (req.method !== "GET") {
+        sendJson(res, 405, { ok: false, error: "usage", reason: "用 GET" });
+        return;
+      }
+      if (deny(req, res, false)) return;
+      sendJson(res, 200, {
+        ok: true,
+        mcp: "/mcp",
+        usage: "POST /mcp 建立 MCP 会话后调用这些工具。会改局面的先 claim，把返回的 lease 放进参数。同一时刻只有一条变更。",
+        tools: mcpTools(playTools),
+        ...(playTools.length === 0 ? { warning: "没有读到 civ2ctl 工具表，代打工具未列入" } : {}),
+      });
+      return;
+    }
     if (url.pathname === "/logout" && req.method === "POST") {
       const lease = cookieValue(header(req, "cookie"), LEASE_COOKIE);
       if (lease) gate.release(lease);
@@ -640,6 +656,23 @@ export async function startDashboard(options: DashboardOptions): Promise<Running
       if (deny(req, res, false)) return;
       const listed = await runSession(options.python, options.session, options.gamesDir, ["list"], 8000);
       sendJson(res, listed.ok === true ? 200 : 400, listed);
+      return;
+    }
+    if (url.pathname === "/record" && req.method === "GET") {
+      if (deny(req, res, false)) return;
+      const part = url.searchParams.get("part") || "";
+      if (!["rule", "notes", "turns", "strategy"].includes(part)) {
+        sendJson(res, 400, { ok: false, error: "usage", reason: "part 只能是 rule、notes、turns、strategy" });
+        return;
+      }
+      const turnRaw = url.searchParams.get("turn");
+      const turn = turnRaw === null || turnRaw === "" ? undefined : Number(turnRaw);
+      const result = await readRecord(options.gamesDir, {
+        id: url.searchParams.get("id") || "",
+        part,
+        turn: Number.isInteger(turn) ? turn : undefined,
+      });
+      sendJson(res, result.ok === true ? 200 : 400, result);
       return;
     }
     const packed = /^\/pack\/([^/]+)$/u.exec(url.pathname);

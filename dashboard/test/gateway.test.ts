@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { runCli } from "../src/cli.js";
 import { Gate, runMutation, whenIdle } from "../src/gate.js";
 import { listenLines } from "../src/lan.js";
-import { PAGE_COOKIE_MAX_AGE, bindAllowed, inputShape } from "../src/mcp.js";
+import { PAGE_COOKIE_MAX_AGE, bindAllowed, inputShape, mcpTools } from "../src/mcp.js";
 import { needsLease, toolDescription, visiblePlayTools, type CtlTool } from "../src/play.js";
 import { openGame, resolveGameDir } from "../src/session.js";
 import { startDashboard, type DashboardOptions } from "../src/server.js";
@@ -160,6 +160,31 @@ test("play tools omit saves, loads, quits and launch commands", () => {
   assert.match(toolDescription(respond), /鼠标/);
 });
 
+test("the MCP catalog documents every registered tool and hides the session commands", () => {
+  const tools = mcpTools(fixture);
+  const names = tools.map(tool => tool.name);
+  assert.deepEqual(names.slice(0, 11), [
+    "claim", "release", "list_games", "game_status", "read_game", "read_record",
+    "pack_game", "start_game", "resume_game", "checkpoint", "close_game",
+  ]);
+  for (const hidden of ["save-game", "load-game", "quit-game", "wait-ready", "skip-intro"]) {
+    assert.equal(names.includes(hidden), false);
+  }
+  const move = tools.find(tool => tool.name === "move");
+  assert.equal(move?.lease, true);
+  assert.ok(move?.input_schema.required.includes("lease"));
+  assert.equal(move?.input_schema.properties.lease?.description, "claim 返回的租约");
+  const status = tools.find(tool => tool.name === "status");
+  assert.equal(status?.lease, false);
+  assert.equal(status?.input_schema.properties.lease, undefined);
+  const start = tools.find(tool => tool.name === "start_game");
+  assert.equal(start?.lease, true);
+  assert.equal(start?.input_schema.properties.spec?.type, "object");
+  const respond = tools.find(tool => tool.name === "respond");
+  assert.match(respond?.description ?? "", /鼠标/);
+  assert.equal(tools.find(tool => tool.name === "read_record")?.input_schema.required.includes("id"), true);
+});
+
 test("a timed out command is killed", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "civ2-cli-"));
   const script = path.join(dir, "fake.mjs");
@@ -201,6 +226,13 @@ if (args[0] === "tools") {
   try {
     const denied = await post(locked.url, { authorization: "Bearer wrong" }, initialize());
     assert.equal(denied.status, 401);
+    const hidden = await fetch(`${locked.url}/tools`);
+    assert.equal(hidden.status, 401);
+    const shown = await fetch(`${locked.url}/tools`, { headers: { authorization: "Bearer secret" } });
+    assert.equal(shown.status, 200);
+    const catalog = await shown.json() as { ok?: boolean; mcp?: string; tools?: { name: string }[] };
+    assert.equal(catalog.ok, true);
+    assert.equal(catalog.mcp, "/mcp");
     const init = await post(open.url, {}, initialize());
     assert.equal(init.status, 200, init.body);
     const session = init.headers.get("mcp-session-id");
@@ -215,6 +247,14 @@ if (args[0] === "tools") {
     assert.ok(names.includes("start_game"));
     assert.equal(names.includes("save-game"), false);
     assert.ok(names.includes("move"));
+    const posted = await fetch(`${open.url}/tools`, { method: "POST" });
+    assert.equal(posted.status, 405);
+    const openCatalog = await fetch(`${open.url}/tools`);
+    assert.equal(openCatalog.status, 200);
+    const openBody = await openCatalog.json() as { tools?: { name: string }[]; warning?: string };
+    assert.equal(openBody.warning, undefined);
+    assert.deepEqual(openBody.tools?.map(tool => tool.name), names);
+    assert.deepEqual(catalog.tools?.map(tool => tool.name), names);
   } finally {
     await open.close();
     await locked.close();
@@ -303,6 +343,12 @@ else console.log(JSON.stringify({ ok: true, args }));
     assert.match(await badUrl.text(), /口令不对/);
     const mcp = await post(locked.url, { cookie: pageCookie }, initialize());
     assert.equal(mcp.status, 401);
+    const catalog = await fetch(`${locked.url}/tools`, { headers: { cookie: pageCookie } });
+    assert.equal(catalog.status, 200);
+    const documented = await catalog.json() as { warning?: string; tools?: { name: string }[] };
+    assert.match(documented.warning ?? "", /代打工具/);
+    assert.equal(documented.tools?.some(tool => tool.name === "claim"), true);
+    assert.equal(documented.tools?.some(tool => tool.name === "move"), false);
     const openEvents = await fetch(`${locked.url}/events`, { headers: { cookie: pageCookie } });
     assert.equal(openEvents.status, 200);
     await openEvents.body?.cancel();
@@ -357,6 +403,30 @@ appendFileSync(process.env.RUN_LOG, process.argv.slice(2).join(" ") + "\\n");
     if (previous === undefined) delete process.env.RUN_LOG;
     else process.env.RUN_LOG = previous;
     await locked.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET /record reads a saved rule and refuses the command log", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "civ2-record-http-"));
+  const script = path.join(dir, "fake.mjs");
+  await writeFile(script, `const args = process.argv.slice(2);
+if (args[0] === "tools") console.log(JSON.stringify({ ok: true, tools: [] }));
+else console.log(JSON.stringify({ ok: true }));
+`);
+  const id = "kept";
+  await mkdir(path.join(dir, id, "agent"), { recursive: true });
+  await writeFile(path.join(dir, id, "session.json"), JSON.stringify({ id, title: "样例" }));
+  await writeFile(path.join(dir, id, "agent", "rule.md"), "法则正文");
+  const dash = await startDashboard(options("127.0.0.1", "", script, dir));
+  try {
+    const allowed = await fetch(`${dash.url}/record?id=${id}&part=rule`);
+    assert.equal(allowed.status, 200);
+    assert.equal((await allowed.json()).rule, "法则正文");
+    const refused = await fetch(`${dash.url}/record?id=${id}&part=log`);
+    assert.equal(refused.status, 400);
+  } finally {
+    await dash.close();
     await rm(dir, { recursive: true, force: true });
   }
 });

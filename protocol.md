@@ -1,6 +1,6 @@
 # civ2agent 命令行接口
 
-日期：2026-10-25，协议 3
+日期：2026-11-14，协议 3
 
 agent 通过 `cli/civ2ctl.py` 观察和操作《文明 II》。注入游戏的 `civ2agent.dll` 在游戏的界面线程执行命令，命令行经命名管道 `\\.\pipe\civ2agent` 和它通信。agent 只调用命令行，不读进程内存，也不直接连管道。
 
@@ -253,6 +253,8 @@ npm start
 
 地址是 `http://<这台机器的局域网地址>:4732/mcp`，端口用 `DASHBOARD_PORT`（默认 4732）。请求带 `Authorization: Bearer 令牌`。默认只听 `127.0.0.1`。要对局域网开放，把 `DASHBOARD_HOST` 设为 `0.0.0.0`，同时设置 `DASHBOARD_TOKEN`；没有令牌时进程不启动。只听本机且没有令牌时，本机客户端免令牌。监听通配地址时，启动日志列出本机回环和每个局域网 IPv4，页面和 MCP 各一行，不写令牌。防火墙要由这台机器自己放行该端口，程序不添加规则。
 
+`GET /tools` 返回当前注册的全部 MCP 工具。每一项有 `name`、`description`、`lease`（为 true 时要先 `claim`，把返回的租约放进参数）和 `input_schema`。`usage` 说明怎么在 `/mcp` 上调用。登录方式和页面一样：Bearer 或登录 cookie。`/mcp` 仍只认 Bearer。代打工具来自启动时读到的 `civ2ctl.py tools`；没读到时仍返回会话工具，并带 `warning`。
+
 页面和 `/events` 在设了令牌时要登录。`POST /login` 提交同一个令牌，成功后写 `HttpOnly`、`SameSite=Lax` 的 cookie，`Max-Age` 为 180 天，这台浏览器下次打开不用再输。`GET` 带查询参数 `token` 且与令牌一致时同样登录，并重定向到去掉该参数的地址。`GET /login` 是登录页。`POST /logout` 清掉 cookie。没有 cookie 也没有 Bearer 时，页面转到 `/login`，事件流和 `/play` 返回 401。`/mcp` 只认 Bearer，不认这枚 cookie。`app.js` 和 `app.css` 不含局面，不需要登录。
 
 观察页的主操作是开局：写下怎么开、可选攻略、局数（1 到 20）和每局回合（1 到 500），然后「开局并玩」。它在跑游戏的电脑上按这个次数启动 `civ2-play.mjs`，一局结束再开下一局。正在进行的局可以用「接着玩这一局」。`停下` 结束这次安排并交回租约。单步操作收在折叠里：回答当前对话框、结束回合、存盘、走一步、改产、设定税率。`via` 为 `mouse` 的对话框仍移动跑游戏这台电脑的鼠标，游戏窗口留在那块屏幕上。
@@ -261,7 +263,7 @@ npm start
 
 管理工具：
 
-- `list_games`、`game_status`、`read_game`、`read_record`、`pack_game`：不需要租约。`read_game` 是观察页内存里的局面（连接、回合、年份、文明、对话框、城市窗口、税率窗口），不连管道。`read_record` 读一局目录里的复盘材料，不连游戏。`part` 为 `index`（目录和各段摘要）、`turns`（每回合一行）、`notes`、`strategy`（当前或某一回合）、`snapshot`（某一回合的快照）、`runs`、`run`（一段的 `result.json`）、`log`（命令摘要）、`brief`、`rule`。存档只列名字。`log` 每次最多 100 行，不带完整局面。`pack_game` 返回下载路径。`GET /pack/<id>` 下载这一局的 zip，`POST /pack` 上传同一个格式的包，请求体就是 zip，`Content-Type` 为 `application/zip`。两条都要和页面一样登录。包是这一局的目录，不含 `backup/`。已经存在的局，以及正在进行的局，拒绝覆盖。`game_status`、`read_record`、`pack_game` 和 `resume_game` 的 `id` 只能是 `games/` 下的一层目录名。
+- `list_games`、`game_status`、`read_game`、`read_record`、`pack_game`：不需要租约。`read_game` 是观察页内存里的局面（连接、回合、年份、文明、对话框、城市窗口、税率窗口），不连管道。`read_record` 读一局目录里的复盘材料，不连游戏。`part` 为 `index`（目录和各段摘要）、`turns`（每回合一行）、`notes`、`strategy`（当前或某一回合）、`snapshot`（某一回合的快照）、`runs`、`run`（一段的 `result.json`）、`log`（命令摘要）、`brief`、`rule`。存档只列名字。`log` 每次最多 100 行，不带完整局面。`pack_game` 返回下载路径。`GET /record?id=<id>&part=rule|notes|turns|strategy` 读某一局的复盘文字，不连游戏。`GET /pack/<id>` 下载这一局的 zip，`POST /pack` 上传同一个格式的包，请求体就是 zip，`Content-Type` 为 `application/zip`。两条都要和页面一样登录。包是这一局的目录，不含 `backup/`。已经存在的局，以及正在进行的局，拒绝覆盖。`game_status`、`read_record`、`pack_game` 和 `resume_game` 的 `id` 只能是 `games/` 下的一层目录名。
 - `start_game`：`lease` 和 `spec`（对象，键与上面的 spec.json 相同），可选 `title`、`request`、`id`。交给 `civ2session.py new --spec`，可能要数分钟，开始时发一条进度「正在开局」。
 - `resume_game`、`checkpoint`、`close_game`：`close_game` 的 `status` 为 `paused` 或 `ended`，可选 `keep_running`。
 
